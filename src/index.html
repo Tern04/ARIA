@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ARIA</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="/main.js" defer></script>
+  </head>
+
+  <body>
+    <div class="hud">
+      <header class="hud-header">
+        <div class="brand-group">
+          <span class="brand">ARIA</span>
+          <button class="pin-toggle" id="pin-toggle" aria-label="Pin HUD above windows" title="Pin above windows">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 17v5" />
+              <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+            </svg>
+          </button>
+        </div>
+        <div class="hud-clock">
+          <span id="clock-time">--:--:--</span>
+          <span id="clock-date">----.--.--</span>
+        </div>
+      </header>
+
+      <div class="hud-grid">
+        <section class="widget widget--hardware" id="widget-hardware">
+          <h2 class="widget-label">SYSTEM</h2>
+          <div class="gauge-row">
+            <div class="gauge">
+              <canvas class="gauge-canvas" id="gauge-cpu" width="120" height="120"></canvas>
+              <div class="gauge-value"><span id="cpu-val">--</span><span class="unit">%</span></div>
+              <div class="gauge-name">CPU</div>
+            </div>
+            <div class="gauge">
+              <canvas class="gauge-canvas" id="gauge-ram" width="120" height="120"></canvas>
+              <div class="gauge-value"><span id="ram-val">--</span><span class="unit">%</span></div>
+              <div class="gauge-name">RAM</div>
+            </div>
+            <div class="gauge">
+              <canvas class="gauge-canvas" id="gauge-gpu" width="120" height="120"></canvas>
+              <div class="gauge-value"><span id="gpu-val">--</span><span class="unit">%</span></div>
+              <div class="gauge-name">GPU</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="widget widget--github" id="widget-github">
+          <h2 class="widget-label">GITHUB</h2>
+          <div class="widget-body">
+            <span class="disconnected">not connected</span>
+          </div>
+        </section>
+
+        <section class="widget widget--email" id="widget-email">
+          <h2 class="widget-label">MAIL</h2>
+          <div class="widget-body widget-body--center">
+            <span class="big-count" id="email-count">--</span>
+            <span class="big-count-label">unread</span>
+          </div>
+        </section>
+
+        <section class="widget widget--stag" id="widget-stag">
+          <h2 class="widget-label">STAG / ZČU</h2>
+          <div class="widget-body">
+            <span class="disconnected">not connected</span>
+          </div>
+        </section>
+
+        <section class="widget widget--music" id="widget-music">
+          <h2 class="widget-label">NOW PLAYING</h2>
+          <div class="widget-body">
+            <div class="track-title" id="music-title">--</div>
+            <div class="track-artist" id="music-artist">--</div>
+          </div>
+        </section>
+
+        <section class="widget widget--screentime" id="widget-screentime">
+          <h2 class="widget-label">SCREEN TIME</h2>
+          <div class="widget-body">
+            <span class="disconnected">not tracking</span>
+          </div>
+        </section>
+      </div>
+    </div>
+  </body>
+</html>

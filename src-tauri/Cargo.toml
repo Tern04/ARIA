@@ -1,0 +1,30 @@
+[package]
+name = "aria"
+version = "0.1.0"
+description = "ARIA — cross-platform desktop HUD dashboard"
+authors = ["Tern04"]
+edition = "2021"
+
+[lib]
+# _lib suffix avoids name collision with the bin on Windows (rust-lang/cargo#8519)
+name = "aria_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# macos-private-api: required for transparent windows on macOS
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.36"
+tokio = { version = "1", features = ["time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+imap = "2"
+native-tls = "0.2"
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
