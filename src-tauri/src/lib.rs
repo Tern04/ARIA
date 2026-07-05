@@ -12,10 +12,15 @@ pub fn run() {
                 .get_webview_window("main")
                 .expect("main window missing from config");
             window::set_desktop_layer(&main);
+            window::spawn_interactivity_watch(main.clone());
             collectors::spawn_all(app.handle());
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![window::set_overlay])
+        .invoke_handler(tauri::generate_handler![
+            window::set_overlay,
+            collectors::frontend_ready,
+            collectors::stag::stag_login
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

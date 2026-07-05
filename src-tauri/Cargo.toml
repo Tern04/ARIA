@@ -20,11 +20,15 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.36"
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync", "macros"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 imap = "2"
+# same minor as imap 2.4's internal dep; needed to name Envelope in signatures
+imap-proto = "0.10"
 native-tls = "0.2"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
+rfc2047-decoder = "1"
+chrono = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
