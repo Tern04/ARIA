@@ -84,6 +84,19 @@
           <div class="widget-body">
             <div class="track-title" id="music-title">--</div>
             <div class="track-artist" id="music-artist">--</div>
+            <div class="music-controls" id="music-controls">
+              <button class="music-btn" data-action="previous" aria-label="Previous track">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+              </button>
+              <button class="music-btn music-btn--play" id="music-playpause" data-action="playpause" aria-label="Play or pause">
+                <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zm8 0h4v14h-4z"/></svg>
+              </button>
+              <button class="music-btn" data-action="next" aria-label="Next track">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zm-2 6L5.5 6v12z"/></svg>
+              </button>
+            </div>
+            <ul class="playlist-list" id="playlist-list"></ul>
           </div>
         </section>
 
@@ -91,6 +104,13 @@
           <h2 class="widget-label">SCREEN TIME</h2>
           <div class="widget-body">
             <span class="disconnected">not tracking</span>
+          </div>
+        </section>
+
+        <section class="widget widget--discord" id="widget-discord">
+          <h2 class="widget-label">DISCORD</h2>
+          <div class="widget-body">
+            <span class="disconnected">not connected</span>
           </div>
         </section>
       </div>

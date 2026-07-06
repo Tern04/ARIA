@@ -257,13 +257,19 @@ async function initCollectors() {
     const p = e.payload;
     const title = document.getElementById("music-title");
     const artist = document.getElementById("music-artist");
-    if (p.status === "playing") {
+    const controls = document.getElementById("music-controls");
+    const playing = p.status === "playing";
+    if (playing || p.status === "paused") {
       title.textContent = p.title;
       artist.textContent = p.artist;
+      controls.classList.remove("music-controls--idle");
     } else {
       title.textContent = "--";
       artist.textContent = "--";
+      controls.classList.add("music-controls--idle");
     }
+    // Play glyph when paused/stopped, pause glyph when playing.
+    document.getElementById("music-playpause").classList.toggle("is-playing", playing);
   });
 
   on("stag", (e) => {
@@ -335,6 +341,45 @@ async function initCollectors() {
   await Promise.all(pending);
 }
 
+async function initMusicControls() {
+  const controls = document.getElementById("music-controls");
+  controls.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".music-btn");
+    if (!btn) return;
+    try {
+      await window.__TAURI__.core.invoke("music_control", { action: btn.dataset.action });
+    } catch (err) {
+      console.error("music_control failed:", err);
+    }
+  });
+
+  const list = document.getElementById("playlist-list");
+  try {
+    const names = await window.__TAURI__.core.invoke("music_playlists");
+    for (const name of names) {
+      const li = document.createElement("li");
+      li.className = "playlist-item";
+      const icon = document.createElement("span");
+      icon.className = "playlist-shuffle";
+      icon.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 3h5v5h-2V6.4l-9 9-1.4-1.4 9-9H16zm-9.6 9.6L3 16.2 4.4 17.6 8 14zM17 16h-1.6l-2.5-2.5-1.4 1.4L14 17.6V19h-3v2h5v-3l1.6 1.6L21 17.8 17 13.8z"/></svg>';
+      const label = document.createElement("span");
+      label.className = "playlist-name";
+      label.textContent = name;
+      li.append(icon, label);
+      li.addEventListener("click", async () => {
+        try {
+          await window.__TAURI__.core.invoke("music_play_playlist", { name });
+        } catch (err) {
+          console.error("music_play_playlist failed:", err);
+        }
+      });
+      list.append(li);
+    }
+  } catch (err) {
+    console.error("music_playlists failed:", err);
+  }
+}
+
 function initPinToggle() {
   const btn = document.getElementById("pin-toggle");
   let above = false;
@@ -355,6 +400,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   setInterval(updateClock, 1000);
   initGauges();
   initPinToggle();
+  initMusicControls();
   await initCollectors();
   // All listeners are now registered; let gated collectors start emitting.
   window.__TAURI__.core.invoke("frontend_ready");

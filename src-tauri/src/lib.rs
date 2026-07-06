@@ -19,6 +19,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window::set_overlay,
             collectors::frontend_ready,
+            collectors::music::music_control,
+            collectors::music::music_playlists,
+            collectors::music::music_play_playlist,
             collectors::stag::stag_login
         ])
         .run(tauri::generate_context!())

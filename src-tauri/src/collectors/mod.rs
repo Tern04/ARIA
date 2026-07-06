@@ -1,7 +1,7 @@
 mod email;
 mod github;
 mod hardware;
-mod music;
+pub mod music;
 mod screentime;
 pub mod stag;
 
