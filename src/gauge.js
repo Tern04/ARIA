@@ -14,8 +14,8 @@ export function drawGauge(canvas, value) {
   const h = canvas.height;
   const cx = w / 2;
   const cy = h / 2;
-  const r = w * 0.38;
-  const lineWidth = w * 0.09;
+  const r = w * 0.37;
+  const lineWidth = w * 0.115;
   const arcStart = START - SWEEP / 2 + Math.PI / 2;
   const filled = SWEEP * Math.max(0, Math.min(100, value)) / 100;
 
