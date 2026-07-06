@@ -357,6 +357,22 @@ body.interactive .widget {
   display: flex;
   align-items: baseline;
   gap: 6px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  padding: 0 0 3px;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 0.2s, border-color 0.2s;
+}
+
+.mail-acct:hover {
+  opacity: 1;
+}
+
+.mail-acct--active {
+  opacity: 1;
+  border-bottom-color: var(--color-accent);
 }
 
 .mail-acct-count {
@@ -427,31 +443,25 @@ body.interactive .widget {
 
 /* ── stag ── */
 
+.stag-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 8px;
+}
+
 .stag-program {
   font-size: 0.9rem;
   font-weight: 600;
   color: var(--color-text);
 }
 
-.stag-semester {
+.stag-meta {
   font-size: 0.75rem;
   color: var(--color-text-dim);
-  border-bottom: 1px solid var(--color-border);
-  padding-bottom: 8px;
-}
-
-.day-label {
-  font-family: var(--font-display);
-  font-size: 0.6rem;
-  font-weight: 700;
-  letter-spacing: 0.2em;
-  color: var(--color-text-dim);
-  margin-top: 6px;
-}
-
-.day-label--today {
-  color: var(--color-accent);
-  text-shadow: var(--glow-accent);
+  white-space: nowrap;
 }
 
 .stag-section {
@@ -462,13 +472,142 @@ body.interactive .widget {
   color: var(--color-text-dim);
   border-top: 1px solid var(--color-border);
   padding-top: 8px;
-  margin-top: auto;
+  margin-top: 4px;
 }
 
-.class-kind {
-  font-size: 0.7rem;
+/* timetable grid */
+
+.tt-grid {
+  display: grid;
+  gap: 2px;
+  align-items: stretch;
+}
+
+.tt-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  padding-bottom: 2px;
+}
+
+.tt-head-num {
+  font-family: var(--font-display);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.tt-head-time {
+  font-size: 0.5rem;
+  color: var(--color-text-dim);
+}
+
+.tt-day {
+  display: flex;
+  align-items: center;
+  padding-right: 6px;
+  font-family: var(--font-display);
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--color-text-dim);
+}
+
+.tt-class {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 3px 4px;
+  border-radius: 3px;
+  border-left: 2px solid var(--color-accent);
+  background: rgba(0, 212, 255, 0.1);
+  overflow: hidden;
+}
+
+.tt-class--seminar {
+  border-left-color: var(--color-warn);
+  background: rgba(255, 152, 0, 0.1);
+}
+
+.tt-subj {
+  font-size: 0.62rem;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tt-room {
+  font-size: 0.55rem;
   color: var(--color-text-dim);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* course list */
+
+.course-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.course-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.course-cr {
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--color-accent);
+  min-width: 14px;
+  text-align: right;
+}
+
+.course-code {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.course-code--req {
+  color: var(--color-accent);
+}
+
+.course-name {
+  font-size: 0.72rem;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.course-tag {
+  margin-left: auto;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-display);
+  font-size: 0.5rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.course-tag--req {
+  color: var(--color-accent);
+  border-color: var(--color-border-hover);
 }
 
 .class-row {

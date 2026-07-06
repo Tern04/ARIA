@@ -1,6 +1,6 @@
-use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
+use chrono::{Datelike, NaiveDate};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
@@ -10,7 +10,12 @@ const WS_BASE: &str = "https://stag-ws.zcu.cz/ws";
 const POLL: Duration = Duration::from_secs(900);
 const POLL_DISCONNECTED: Duration = Duration::from_secs(300);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
-const MAX_EXAMS: usize = 3;
+
+// Fixed ZČU teaching-period start times, indexed by period number (1-based).
+const PERIOD_START: [&str; 15] = [
+    "", "07:30", "08:25", "09:20", "10:15", "11:10", "12:05", "13:00", "13:55", "14:50", "15:45",
+    "16:40", "17:35", "18:30", "19:25",
+];
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -21,20 +26,32 @@ enum StagState {
     Connected {
         program: String,
         semester: String,
-        days: Vec<DaySchedule>,
-        exams: Vec<ExamEntry>,
+        total_credits: u64,
+        timetable: Timetable,
+        courses: Vec<Course>,
     },
 }
 
 #[derive(Serialize, Clone)]
-struct DaySchedule {
-    label: String,
-    today: bool,
+struct Timetable {
+    min_period: u8,
+    max_period: u8,
+    periods: Vec<PeriodHeader>,
     classes: Vec<ClassEntry>,
 }
 
 #[derive(Serialize, Clone)]
+struct PeriodHeader {
+    period: u8,
+    start: String,
+}
+
+#[derive(Serialize, Clone)]
 struct ClassEntry {
+    day: u8, // 0 = Monday
+    day_label: String,
+    start_period: u8,
+    end_period: u8,
     time: String,
     subject: String,
     kind: String,
@@ -42,9 +59,11 @@ struct ClassEntry {
 }
 
 #[derive(Serialize, Clone)]
-struct ExamEntry {
-    date: String,
-    subject: String,
+struct Course {
+    code: String,
+    name: String,
+    credits: u64,
+    compulsory: bool,
 }
 
 pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
@@ -75,34 +94,30 @@ async fn poll(client: &reqwest::Client) -> Result<StagState, String> {
     let os_cislo = student_number(client, &ticket).await?;
 
     let today = chrono::Local::now().date_naive();
-    let monday = today - ChronoDuration::days(today.weekday().num_days_from_monday() as i64);
-    let sunday = monday + ChronoDuration::days(6);
+    let (year, term) = academic_term(today);
+    let (from, to) = teaching_range(year, term);
 
     let schedule_url = format!(
         "{WS_BASE}/services/rest2/rozvrhy/getRozvrhByStudent?osCislo={os_cislo}&datumOd={}&datumDo={}&outputFormat=JSON",
-        monday.format("%-d.%-m.%Y"),
-        sunday.format("%-d.%-m.%Y"),
-    );
-    let exams_url = format!(
-        "{WS_BASE}/services/rest2/terminy/getTerminyProStudenta?osCislo={os_cislo}&outputFormat=JSON"
+        from.format("%-d.%-m.%Y"),
+        to.format("%-d.%-m.%Y"),
     );
     let info_url = format!(
         "{WS_BASE}/services/rest2/student/getStudentInfo?osCislo={os_cislo}&outputFormat=JSON"
     );
-    let (year, term) = academic_term(today);
     let subjects_url = format!(
         "{WS_BASE}/services/rest2/predmety/getPredmetyByStudent?osCislo={os_cislo}&rok={year}&semestr={term}&outputFormat=JSON"
     );
 
-    let (schedule, exams, info, subjects) = tokio::join!(
+    let (schedule, info, subjects) = tokio::join!(
         get(client, &ticket, &schedule_url),
-        get(client, &ticket, &exams_url),
         get(client, &ticket, &info_url),
         get(client, &ticket, &subjects_url),
     );
 
-    let days = parse_week(&schedule?, today);
-    let exams = parse_exams(&exams.unwrap_or_default(), today);
+    let timetable = parse_timetable(&schedule?);
+    let courses = parse_courses(&subjects.unwrap_or_default());
+    let total_credits = courses.iter().map(|c| c.credits).sum();
 
     let program = info
         .map(|i| {
@@ -114,64 +129,75 @@ async fn poll(client: &reqwest::Client) -> Result<StagState, String> {
         })
         .unwrap_or_else(|_| "?".into());
 
-    let semester = subjects
-        .ok()
-        .and_then(|s| {
-            let list = s["predmetStudenta"].as_array()?.clone();
-            let credits: u64 = list.iter().filter_map(|p| p["kredity"].as_u64()).sum();
-            Some(format!(
-                "{term} {year}/{} · {} subjects · {credits} cr",
-                (year + 1) % 100,
-                list.len()
-            ))
-        })
-        .unwrap_or_default();
+    let semester = format!("{term} {year}/{}", (year + 1) % 100);
 
     Ok(StagState::Connected {
         program,
         semester,
-        days,
-        exams,
+        total_credits,
+        timetable,
+        courses,
     })
 }
 
-fn parse_week(body: &serde_json::Value, today: NaiveDate) -> Vec<DaySchedule> {
-    let Some(akce) = body["rozvrhovaAkce"].as_array() else {
-        return Vec::new();
-    };
-    // BTreeMap keyed by date keeps the week ordered.
-    let mut by_day: BTreeMap<NaiveDate, Vec<(String, ClassEntry)>> = BTreeMap::new();
-    for a in akce {
-        let Some(date) = a["datum"]["value"]
-            .as_str()
-            .and_then(|d| NaiveDate::parse_from_str(d, "%d.%m.%Y").ok())
-        else {
-            continue;
-        };
-        let Some(entry) = parse_class(a) else {
-            continue;
-        };
-        let day_zkr = a["denZkr"].as_str().unwrap_or("?").to_string();
-        by_day.entry(date).or_default().push((day_zkr, entry));
+/// Build the recurring weekly grid from the whole teaching semester: regular
+/// classes recur every week, so dedupe by day+period+subject+type. Exams
+/// (typAkce "Zkouška") are dropped — they are not part of the weekly rhythm.
+fn parse_timetable(body: &serde_json::Value) -> Timetable {
+    let mut classes: Vec<ClassEntry> = Vec::new();
+    let mut seen: BTreeSet<(u8, u8, String, String)> = BTreeSet::new();
+    let mut periods_used: BTreeSet<u8> = BTreeSet::new();
+
+    if let Some(akce) = body["rozvrhovaAkce"].as_array() {
+        for a in akce {
+            let typ = text(a, &["typAkce"]).unwrap_or("");
+            if typ.to_lowercase().contains("zkou") {
+                continue; // skip exams
+            }
+            let Some(entry) = parse_class(a) else {
+                continue;
+            };
+            let key = (
+                entry.day,
+                entry.start_period,
+                entry.subject.clone(),
+                entry.kind.clone(),
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            for p in entry.start_period..=entry.end_period {
+                periods_used.insert(p);
+            }
+            classes.push(entry);
+        }
     }
 
-    by_day
-        .into_iter()
-        .map(|(date, mut items)| {
-            items.sort_by(|a, b| a.1.time.cmp(&b.1.time));
-            let day_zkr = items[0].0.clone();
-            DaySchedule {
-                label: format!("{} {}", day_zkr, date.format("%-d.%-m.")),
-                today: date == today,
-                classes: items.into_iter().map(|(_, c)| c).collect(),
-            }
+    classes.sort_by(|a, b| (a.day, a.start_period).cmp(&(b.day, b.start_period)));
+
+    let min_period = periods_used.iter().min().copied().unwrap_or(1);
+    let max_period = periods_used.iter().max().copied().unwrap_or(1);
+    let periods = (min_period..=max_period)
+        .map(|p| PeriodHeader {
+            period: p,
+            start: PERIOD_START.get(p as usize).unwrap_or(&"").to_string(),
         })
-        .collect()
+        .collect();
+
+    Timetable {
+        min_period,
+        max_period,
+        periods,
+        classes,
+    }
 }
 
 fn parse_class(akce: &serde_json::Value) -> Option<ClassEntry> {
-    let from = text(akce, &["hodinaSkutOd", "casOd", "hodinaOd"])?;
-    let to = text(akce, &["hodinaSkutDo", "casDo", "hodinaDo"]).unwrap_or("?");
+    let day = day_index(akce["denZkr"].as_str().or_else(|| akce["den"].as_str())?)?;
+    let start_period = akce["hodinaOd"].as_u64()? as u8;
+    let end_period = akce["hodinaDo"].as_u64().unwrap_or(start_period as u64) as u8;
+    let from = text(akce, &["hodinaSkutOd", "casOd"]).unwrap_or("");
+    let to = text(akce, &["hodinaSkutDo", "casDo"]).unwrap_or("");
     let subject = match (text(akce, &["katedra"]), text(akce, &["predmet", "zkratka"])) {
         (Some(dept), Some(code)) => format!("{dept}/{code}"),
         (None, Some(code)) => code.to_string(),
@@ -183,6 +209,10 @@ fn parse_class(akce: &serde_json::Value) -> Option<ClassEntry> {
         _ => String::new(),
     };
     Some(ClassEntry {
+        day,
+        day_label: day_short(day).to_string(),
+        start_period,
+        end_period,
         time: format!("{from}–{to}"),
         subject,
         kind: text(akce, &["typAkceZkr"]).unwrap_or("").to_string(),
@@ -190,33 +220,54 @@ fn parse_class(akce: &serde_json::Value) -> Option<ClassEntry> {
     })
 }
 
-fn parse_exams(body: &serde_json::Value, today: NaiveDate) -> Vec<ExamEntry> {
-    let Some(terminy) = body["termin"].as_array() else {
+fn parse_courses(body: &serde_json::Value) -> Vec<Course> {
+    let Some(list) = body["predmetStudenta"].as_array() else {
         return Vec::new();
     };
-    let mut exams: Vec<(NaiveDate, ExamEntry)> = terminy
+    let mut courses: Vec<Course> = list
         .iter()
-        .filter_map(|t| {
-            let date = text(t, &["datum"])
-                .and_then(|d| NaiveDate::parse_from_str(d, "%d.%m.%Y").ok())?;
-            if date < today {
-                return None;
-            }
-            let subject = match (text(t, &["katedra"]), text(t, &["predmet", "zkratka"])) {
-                (Some(dept), Some(code)) => format!("{dept}/{code}"),
-                (None, Some(code)) => code.to_string(),
-                _ => text(t, &["nazev"]).unwrap_or("?").to_string(),
+        .filter_map(|p| {
+            let code = match (p["katedra"].as_str(), p["zkratka"].as_str()) {
+                (Some(dept), Some(zk)) => format!("{dept}/{zk}"),
+                (_, Some(zk)) => zk.to_string(),
+                _ => return None,
             };
-            let when = match text(t, &["casOd"]) {
-                Some(time) => format!("{} {time}", date.format("%-d.%-m.")),
-                None => date.format("%-d.%-m.").to_string(),
-            };
-            Some((date, ExamEntry { date: when, subject }))
+            Some(Course {
+                code,
+                name: p["nazev"].as_str().unwrap_or("").to_string(),
+                credits: p["kredity"].as_u64().unwrap_or(0),
+                compulsory: p["statut"].as_str() == Some("A"),
+            })
         })
         .collect();
-    exams.sort_by_key(|(d, _)| *d);
-    exams.truncate(MAX_EXAMS);
-    exams.into_iter().map(|(_, e)| e).collect()
+    courses.sort_by(|a, b| b.credits.cmp(&a.credits));
+    courses
+}
+
+/// Po=0 … Pá=4; accepts the abbreviated ("Po") or full ("Pondělí") day name.
+fn day_index(name: &str) -> Option<u8> {
+    match name {
+        "Po" | "Pondělí" => Some(0),
+        "Út" | "Úterý" => Some(1),
+        "St" | "Středa" => Some(2),
+        "Čt" | "Čtvrtek" => Some(3),
+        "Pá" | "Pátek" => Some(4),
+        _ => None,
+    }
+}
+
+fn day_short(day: u8) -> &'static str {
+    ["Po", "Út", "St", "Čt", "Pá"].get(day as usize).unwrap_or(&"?")
+}
+
+/// Teaching weeks (excludes the exam period): LS runs late Feb–mid May of the
+/// calendar year after the academic year starts; ZS runs late Sep–mid Dec.
+fn teaching_range(ay_start: i32, term: &str) -> (NaiveDate, NaiveDate) {
+    let ymd = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+    match term {
+        "LS" => (ymd(ay_start + 1, 2, 15), ymd(ay_start + 1, 5, 20)),
+        _ => (ymd(ay_start, 9, 20), ymd(ay_start, 12, 20)),
+    }
 }
 
 /// STAG serves several shapes depending on version; probe alternate keys and
@@ -286,8 +337,7 @@ pub async fn stag_login(app: AppHandle) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())??;
 
-    let entry = keyring::Entry::new("ARIA", "stag").map_err(|e| e.to_string())?;
-    entry.set_password(&ticket).map_err(|e| e.to_string())?;
+    super::store_secret("stag", &ticket)?;
 
     // Refresh immediately instead of waiting out the collector interval.
     let client = reqwest::Client::builder()

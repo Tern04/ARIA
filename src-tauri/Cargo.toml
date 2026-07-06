@@ -26,9 +26,13 @@ imap = "2"
 # same minor as imap 2.4's internal dep; needed to name Envelope in signatures
 imap-proto = "0.10"
 native-tls = "0.2"
-keyring = { version = "3", features = ["apple-native", "windows-native"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 rfc2047-decoder = "1"
 chrono = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
+# Machine-bound encryption for the macOS dev-mode secrets file.
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+getrandom = "0.2"

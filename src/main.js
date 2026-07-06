@@ -23,6 +23,64 @@ function fmtDuration(secs) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+// null = show all accounts; otherwise the label to filter the mail list by.
+let mailFilter = null;
+
+// Kind abbreviation → CSS modifier for colouring lecture vs seminar.
+const CLASS_KIND = { "Př": "lecture", "Cv": "seminar", "Se": "seminar" };
+
+function buildTimetable(tt) {
+  const grid = document.createElement("div");
+  grid.className = "tt-grid";
+  const cols = tt.max_period - tt.min_period + 1;
+  // column 1 = day label, then one column per period.
+  grid.style.gridTemplateColumns = `auto repeat(${cols}, minmax(0, 1fr))`;
+
+  // header row: blank corner + period times
+  const corner = document.createElement("div");
+  corner.className = "tt-corner";
+  grid.append(corner);
+  for (const ph of tt.periods) {
+    const h = document.createElement("div");
+    h.className = "tt-head";
+    h.style.gridColumn = ph.period - tt.min_period + 2;
+    const num = document.createElement("span");
+    num.className = "tt-head-num";
+    num.textContent = ph.period;
+    const t = document.createElement("span");
+    t.className = "tt-head-time";
+    t.textContent = ph.start;
+    h.append(num, t);
+    grid.append(h);
+  }
+
+  const dayNames = ["Po", "Út", "St", "Čt", "Pá"];
+  for (let d = 0; d < 5; d++) {
+    const label = document.createElement("div");
+    label.className = "tt-day";
+    label.style.gridRow = d + 2;
+    label.textContent = dayNames[d];
+    grid.append(label);
+  }
+
+  for (const c of tt.classes) {
+    const cell = document.createElement("div");
+    cell.className = `tt-class tt-class--${CLASS_KIND[c.kind] ?? "other"}`;
+    cell.style.gridRow = c.day + 2;
+    cell.style.gridColumn = `${c.start_period - tt.min_period + 2} / span ${c.end_period - c.start_period + 1}`;
+    const subj = document.createElement("span");
+    subj.className = "tt-subj";
+    subj.textContent = c.subject;
+    const room = document.createElement("span");
+    room.className = "tt-room";
+    room.textContent = c.room;
+    cell.append(subj, room);
+    cell.title = `${c.subject} ${c.kind} · ${c.time} · ${c.room}`;
+    grid.append(cell);
+  }
+  return grid;
+}
+
 function statRow(value, label) {
   const row = document.createElement("div");
   row.className = "stat-row";
@@ -33,23 +91,27 @@ function statRow(value, label) {
   return row;
 }
 
-function initCollectors() {
+// Returns once every listener is registered, so a gated collector's first
+// emit can't race ahead of registration (listen() registers over async IPC).
+async function initCollectors() {
   const { listen } = window.__TAURI__.event;
+  const pending = [];
+  const on = (event, cb) => pending.push(listen(event, cb));
 
-  listen("hardware", (e) => {
+  on("hardware", (e) => {
     setGauge("cpu", e.payload.cpu);
     setGauge("ram", e.payload.ram);
   });
 
-  listen("gpu", (e) => {
+  on("gpu", (e) => {
     setGauge("gpu", e.payload.gpu);
   });
 
-  listen("interactive", (e) => {
+  on("interactive", (e) => {
     document.body.classList.toggle("interactive", e.payload === true);
   });
 
-  listen("github", (e) => {
+  on("github", (e) => {
     const body = document.querySelector("#widget-github .widget-body");
     const p = e.payload;
     body.replaceChildren();
@@ -98,7 +160,7 @@ function initCollectors() {
     }
   });
 
-  listen("email", (e) => {
+  on("email", (e) => {
     const p = e.payload;
     const summary = document.getElementById("mail-summary");
     const list = document.getElementById("mail-list");
@@ -109,11 +171,42 @@ function initCollectors() {
       span.className = "disconnected";
       span.textContent = p.reason;
       summary.append(span);
+      mailFilter = null;
       return;
     }
+
+    const renderList = () => {
+      list.replaceChildren();
+      const shown = p.messages.filter((m) => !mailFilter || m.account === mailFilter);
+      for (const msg of shown) {
+        const li = document.createElement("li");
+        li.className = msg.unseen ? "mail-row mail-row--unseen" : "mail-row";
+        const fromLine = document.createElement("div");
+        fromLine.className = "mail-from-line";
+        const from = document.createElement("span");
+        from.className = "mail-from";
+        from.textContent = msg.from;
+        const tag = document.createElement("span");
+        tag.className = "mail-acct-tag";
+        tag.textContent = msg.account;
+        fromLine.append(from, tag);
+        const subject = document.createElement("div");
+        subject.className = "mail-subject";
+        subject.textContent = msg.subject || "(no subject)";
+        li.append(fromLine, subject);
+        list.append(li);
+      }
+    };
+
+    // Reset a stale filter if that account vanished from the config.
+    if (mailFilter && !p.accounts.some((a) => a.label === mailFilter)) {
+      mailFilter = null;
+    }
+
     for (const acct of p.accounts) {
-      const chip = document.createElement("span");
-      chip.className = "mail-acct";
+      const chip = document.createElement("button");
+      chip.className =
+        mailFilter === acct.label ? "mail-acct mail-acct--active" : "mail-acct";
       const count = document.createElement("span");
       count.className = "mail-acct-count";
       count.textContent = acct.unread ?? "!";
@@ -122,29 +215,23 @@ function initCollectors() {
       label.className = "mail-acct-label";
       label.textContent = acct.label;
       chip.append(count, label);
+      chip.addEventListener("click", () => {
+        // Toggle: click active account to clear the filter.
+        mailFilter = mailFilter === acct.label ? null : acct.label;
+        for (const c of summary.children) {
+          c.classList.toggle(
+            "mail-acct--active",
+            mailFilter !== null && c === chip,
+          );
+        }
+        renderList();
+      });
       summary.append(chip);
     }
-    for (const msg of p.messages) {
-      const li = document.createElement("li");
-      li.className = msg.unseen ? "mail-row mail-row--unseen" : "mail-row";
-      const fromLine = document.createElement("div");
-      fromLine.className = "mail-from-line";
-      const from = document.createElement("span");
-      from.className = "mail-from";
-      from.textContent = msg.from;
-      const tag = document.createElement("span");
-      tag.className = "mail-acct-tag";
-      tag.textContent = msg.account;
-      fromLine.append(from, tag);
-      const subject = document.createElement("div");
-      subject.className = "mail-subject";
-      subject.textContent = msg.subject || "(no subject)";
-      li.append(fromLine, subject);
-      list.append(li);
-    }
+    renderList();
   });
 
-  listen("screentime", (e) => {
+  on("screentime", (e) => {
     const body = document.querySelector("#widget-screentime .widget-body");
     const p = e.payload;
     body.replaceChildren();
@@ -166,7 +253,7 @@ function initCollectors() {
     }
   });
 
-  listen("music", (e) => {
+  on("music", (e) => {
     const p = e.payload;
     const title = document.getElementById("music-title");
     const artist = document.getElementById("music-artist");
@@ -179,75 +266,50 @@ function initCollectors() {
     }
   });
 
-  listen("stag", (e) => {
+  on("stag", (e) => {
     const body = document.querySelector("#widget-stag .widget-body");
     const p = e.payload;
     body.replaceChildren();
     if (p.status === "connected") {
-      const program = document.createElement("div");
+      const header = document.createElement("div");
+      header.className = "stag-header";
+      const program = document.createElement("span");
       program.className = "stag-program";
       program.textContent = p.program;
-      body.append(program);
-      if (p.semester) {
-        const semester = document.createElement("div");
-        semester.className = "stag-semester";
-        semester.textContent = p.semester;
-        body.append(semester);
-      }
+      const meta = document.createElement("span");
+      meta.className = "stag-meta";
+      meta.textContent = `${p.semester} · ${p.total_credits} cr`;
+      header.append(program, meta);
+      body.append(header);
 
-      if (p.days.length === 0) {
-        const span = document.createElement("span");
-        span.className = "disconnected";
-        span.textContent = "no classes this week";
-        body.append(span);
-      }
-      for (const day of p.days) {
-        const label = document.createElement("div");
-        label.className = day.today ? "day-label day-label--today" : "day-label";
-        label.textContent = day.label;
-        body.append(label);
-        for (const c of day.classes) {
-          const row = document.createElement("div");
-          row.className = "class-row";
-          const time = document.createElement("span");
-          time.className = "class-time";
-          time.textContent = c.time;
-          const subject = document.createElement("span");
-          subject.className = "class-subject";
-          subject.textContent = c.subject;
-          const kind = document.createElement("span");
-          kind.className = "class-kind";
-          kind.textContent = c.kind;
-          const room = document.createElement("span");
-          room.className = "class-room";
-          room.textContent = c.room;
-          row.append(time, subject, kind, room);
-          body.append(row);
-        }
-      }
+      body.append(buildTimetable(p.timetable));
 
-      const examsLabel = document.createElement("div");
-      examsLabel.className = "stag-section";
-      examsLabel.textContent = "EXAMS";
-      body.append(examsLabel);
-      if (p.exams.length === 0) {
-        const none = document.createElement("span");
-        none.className = "disconnected";
-        none.textContent = "no upcoming exams";
-        body.append(none);
-      }
-      for (const ex of p.exams) {
+      const coursesLabel = document.createElement("div");
+      coursesLabel.className = "stag-section";
+      coursesLabel.textContent = "COURSES";
+      body.append(coursesLabel);
+      const courseList = document.createElement("div");
+      courseList.className = "course-list";
+      for (const c of p.courses) {
         const row = document.createElement("div");
-        row.className = "class-row";
-        const date = document.createElement("span");
-        date.className = "class-time";
-        date.textContent = ex.date;
-        const subject = document.createElement("span");
-        subject.className = "class-subject";
-        subject.textContent = ex.subject;
-        row.append(date, subject);
-        body.append(row);
+        row.className = "course-row";
+        const cr = document.createElement("span");
+        cr.className = "course-cr";
+        cr.textContent = c.credits;
+        const code = document.createElement("span");
+        code.className = c.compulsory ? "course-code course-code--req" : "course-code";
+        code.textContent = c.code;
+        const name = document.createElement("span");
+        name.className = "course-name";
+        name.textContent = c.name;
+        const tag = document.createElement("span");
+        tag.className = c.compulsory ? "course-tag course-tag--req" : "course-tag";
+        tag.textContent = c.compulsory ? "req" : "opt";
+        tag.title = c.compulsory ? "povinný" : "povinně volitelný";
+        row.append(cr, code, name, tag);
+        courseList.append(row);
       }
+      body.append(courseList);
     } else {
       const span = document.createElement("span");
       span.className = "disconnected";
@@ -269,6 +331,8 @@ function initCollectors() {
       body.append(span, btn);
     }
   });
+
+  await Promise.all(pending);
 }
 
 function initPinToggle() {
@@ -286,12 +350,12 @@ function initPinToggle() {
   });
 }
 
-window.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("DOMContentLoaded", async () => {
   updateClock();
   setInterval(updateClock, 1000);
   initGauges();
   initPinToggle();
-  initCollectors();
-  // Listeners are registered; let gated collectors start emitting.
+  await initCollectors();
+  // All listeners are now registered; let gated collectors start emitting.
   window.__TAURI__.core.invoke("frontend_ready");
 });
