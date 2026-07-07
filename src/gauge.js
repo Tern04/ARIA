@@ -1,10 +1,10 @@
-const ACCENT = "#00d4ff";
-const TRACK = "rgba(0, 212, 255, 0.1)";
+const ACCENT = "#e8ac53";
+const TRACK = "rgba(255, 255, 255, 0.07)";
 const START = -Math.PI / 2;       // top of circle
 const SWEEP = 2 * Math.PI * 0.75; // 270° arc
 
 /**
- * Draw a circular gauge arc onto a canvas element.
+ * Draw a clean circular gauge ring onto a canvas element.
  * @param {HTMLCanvasElement} canvas
  * @param {number} value  0–100
  */
@@ -14,10 +14,10 @@ export function drawGauge(canvas, value) {
   const h = canvas.height;
   const cx = w / 2;
   const cy = h / 2;
-  const r = w * 0.37;
-  const lineWidth = w * 0.115;
+  const r = w * 0.4;
+  const lineWidth = w * 0.06;
   const arcStart = START - SWEEP / 2 + Math.PI / 2;
-  const filled = SWEEP * Math.max(0, Math.min(100, value)) / 100;
+  const filled = (SWEEP * Math.max(0, Math.min(100, value))) / 100;
 
   ctx.clearRect(0, 0, w, h);
 
@@ -36,9 +36,15 @@ export function drawGauge(canvas, value) {
     ctx.strokeStyle = ACCENT;
     ctx.lineWidth = lineWidth;
     ctx.lineCap = "round";
-    ctx.shadowColor = ACCENT;
-    ctx.shadowBlur = 10;
     ctx.stroke();
-    ctx.shadowBlur = 0;
+
+    // bright dot at the arc tip
+    const tip = arcStart + filled;
+    const tx = cx + r * Math.cos(tip);
+    const ty = cy + r * Math.sin(tip);
+    ctx.beginPath();
+    ctx.arc(tx, ty, lineWidth * 0.85, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff4e2";
+    ctx.fill();
   }
 }

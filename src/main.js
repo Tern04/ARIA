@@ -12,9 +12,28 @@ function initGauges() {
   drawGauge(document.getElementById("gauge-gpu"), 0);
 }
 
-function setGauge(name, value) {
-  drawGauge(document.getElementById(`gauge-${name}`), value);
-  document.getElementById(`${name}-val`).textContent = Math.round(value);
+// Smoothly tween each gauge from its current value to the new one so the
+// rings sweep rather than snap.
+const gaugeState = {};
+
+function setGauge(name, target) {
+  const canvas = document.getElementById(`gauge-${name}`);
+  const valEl = document.getElementById(`${name}-val`);
+  const s = gaugeState[name] || (gaugeState[name] = { value: 0, raf: 0 });
+  const from = s.value;
+  const start = performance.now();
+  const duration = 650;
+  cancelAnimationFrame(s.raf);
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+    const v = from + (target - from) * eased;
+    s.value = v;
+    drawGauge(canvas, v);
+    valEl.textContent = Math.round(v);
+    if (t < 1) s.raf = requestAnimationFrame(step);
+  };
+  s.raf = requestAnimationFrame(step);
 }
 
 function fmtDuration(secs) {
@@ -93,6 +112,10 @@ function statRow(value, label) {
 
 // Returns once every listener is registered, so a gated collector's first
 // emit can't race ahead of registration (listen() registers over async IPC).
+function setStatus(id, online) {
+  document.getElementById(id).classList.toggle("online", online);
+}
+
 async function initCollectors() {
   const { listen } = window.__TAURI__.event;
   const pending = [];
@@ -114,6 +137,7 @@ async function initCollectors() {
   on("github", (e) => {
     const body = document.querySelector("#widget-github .widget-body");
     const p = e.payload;
+    setStatus("status-github", p.status === "connected");
     body.replaceChildren();
     if (p.status !== "connected") {
       const span = document.createElement("span");
@@ -162,6 +186,7 @@ async function initCollectors() {
 
   on("email", (e) => {
     const p = e.payload;
+    setStatus("status-mail", p.status === "connected");
     const summary = document.getElementById("mail-summary");
     const list = document.getElementById("mail-list");
     summary.replaceChildren();
@@ -259,13 +284,15 @@ async function initCollectors() {
     const artist = document.getElementById("music-artist");
     const controls = document.getElementById("music-controls");
     const playing = p.status === "playing";
-    if (playing || p.status === "paused") {
+    const active = playing || p.status === "paused";
+    setStatus("status-music", active);
+    if (active) {
       title.textContent = p.title;
       artist.textContent = p.artist;
       controls.classList.remove("music-controls--idle");
     } else {
-      title.textContent = "--";
-      artist.textContent = "--";
+      title.textContent = "Nothing playing";
+      artist.textContent = "—";
       controls.classList.add("music-controls--idle");
     }
     // Play glyph when paused/stopped, pause glyph when playing.
@@ -275,6 +302,7 @@ async function initCollectors() {
   on("stag", (e) => {
     const body = document.querySelector("#widget-stag .widget-body");
     const p = e.payload;
+    setStatus("status-stag", p.status === "connected");
     body.replaceChildren();
     if (p.status === "connected") {
       const header = document.createElement("div");
