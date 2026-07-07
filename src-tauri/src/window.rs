@@ -39,6 +39,10 @@ pub fn set_desktop_layer(window: &WebviewWindow) {
     unsafe {
         let _: () = msg_send![ns_window, setLevel: DESKTOP_LEVEL];
         let _: () = msg_send![ns_window, setCollectionBehavior: COLLECTION_BEHAVIOR];
+        // Drop the macOS window shadow: on a translucent, mostly-transparent
+        // HUD its rounded-rect corners bleed through the panels as uneven
+        // curves. Without it, only the panels' own clean corners show.
+        let _: () = msg_send![ns_window, setHasShadow: false];
     }
 }
 

@@ -78,7 +78,7 @@ body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow), var(--highlight);
-  overflow: hidden;
+  /* no overflow:hidden here — it would clip the theme-picker dropdown */
 }
 
 .brand-group {
@@ -888,3 +888,6 @@ body.interactive .mod-hint {
     opacity: 1;
   }
 }
+
+/* theme-switcher: hide other themes' header elements */
+.vitals { display: none; }

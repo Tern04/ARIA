@@ -431,9 +431,56 @@ function initPinToggle() {
   });
 }
 
+const THEME_NAMES = ["studio", "jarvis", "reactor"];
+
+function redrawGauges() {
+  for (const name of ["cpu", "ram", "gpu"]) {
+    const s = gaugeState[name];
+    drawGauge(document.getElementById(`gauge-${name}`), s ? s.value : 0);
+  }
+}
+
+function applyTheme(name) {
+  if (!THEME_NAMES.includes(name)) name = "studio";
+  document.documentElement.dataset.theme = name;
+  document.getElementById("theme-css").href = `theme-${name}.css`;
+  try {
+    localStorage.setItem("aria-theme", name);
+  } catch {}
+  for (const b of document.querySelectorAll("#theme-menu button")) {
+    b.classList.toggle("active", b.dataset.theme === name);
+  }
+  redrawGauges();
+}
+
+function initThemePicker() {
+  const btn = document.getElementById("theme-btn");
+  const menu = document.getElementById("theme-menu");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+  });
+  menu.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-theme]");
+    if (b) {
+      applyTheme(b.dataset.theme);
+      menu.hidden = true;
+    }
+  });
+  document.addEventListener("click", () => {
+    menu.hidden = true;
+  });
+  let saved = "studio";
+  try {
+    saved = localStorage.getItem("aria-theme") || "studio";
+  } catch {}
+  applyTheme(saved);
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   updateClock();
   setInterval(updateClock, 1000);
+  initThemePicker();
   initGauges();
   initPinToggle();
   initMusicControls();

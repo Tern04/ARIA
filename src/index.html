@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="studio">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,10 +7,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="base.css" />
+    <link rel="stylesheet" href="theme-studio.css" id="theme-css" />
     <script type="module" src="/main.js" defer></script>
   </head>
 
@@ -25,7 +26,49 @@
               <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
             </svg>
           </button>
+          <div class="theme-picker">
+            <button class="pin-toggle" id="theme-btn" aria-label="Choose design" title="Choose design">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="13.5" cy="6.5" r=".8" fill="currentColor" />
+                <circle cx="17" cy="12" r=".8" fill="currentColor" />
+                <circle cx="8" cy="7" r=".8" fill="currentColor" />
+                <circle cx="6.5" cy="12.5" r=".8" fill="currentColor" />
+                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.83-.44-1.12-.29-.29-.44-.65-.44-1.13A1.64 1.64 0 0 1 14.44 16.4h2C18.05 16.4 20 14.45 20 12c0-5.5-4.5-10-8-10z" />
+              </svg>
+            </button>
+            <div class="theme-menu" id="theme-menu" hidden>
+              <button data-theme="studio">Studio</button>
+              <button data-theme="jarvis">JARVIS</button>
+              <button data-theme="reactor">Reactor</button>
+            </div>
+          </div>
           <span class="mod-hint" id="mod-hint">⌥ interact</span>
+        </div>
+        <div class="vitals" aria-hidden="true">
+          <span class="core-wave"></span>
+          <span class="core-wave"></span>
+          <span class="core-wave"></span>
+          <svg class="reactor-emblem" viewBox="0 0 200 200">
+            <defs>
+              <radialGradient id="reactorCore">
+                <stop offset="0%" stop-color="#eafcff" />
+                <stop offset="45%" stop-color="#00d4ff" />
+                <stop offset="100%" stop-color="rgba(0,212,255,0)" />
+              </radialGradient>
+            </defs>
+            <g class="reactor-spin-a">
+              <circle cx="100" cy="100" r="94" fill="none" stroke="rgba(0,212,255,0.55)" stroke-width="4" stroke-dasharray="2 7" />
+              <circle cx="100" cy="100" r="84" fill="none" stroke="rgba(0,212,255,0.3)" stroke-width="1.5" />
+            </g>
+            <g class="reactor-spin-b">
+              <circle cx="100" cy="100" r="68" fill="none" stroke="rgba(0,212,255,0.45)" stroke-width="3" stroke-dasharray="12 6" />
+            </g>
+            <g class="reactor-spin-a">
+              <circle cx="100" cy="100" r="46" fill="none" stroke="rgba(0,212,255,0.65)" stroke-width="18" stroke-dasharray="18 10" />
+            </g>
+            <circle cx="100" cy="100" r="29" fill="none" stroke="rgba(0,212,255,0.5)" stroke-width="2" />
+            <circle class="reactor-heart" cx="100" cy="100" r="20" fill="url(#reactorCore)" />
+          </svg>
         </div>
         <div class="statusbar" aria-hidden="true">
           <span class="status-item" id="status-stag"><i></i>STAG</span>
