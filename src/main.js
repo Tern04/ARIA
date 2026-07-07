@@ -16,10 +16,18 @@ function initGauges() {
 // rings sweep rather than snap.
 const gaugeState = {};
 
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 function setGauge(name, target) {
   const canvas = document.getElementById(`gauge-${name}`);
   const valEl = document.getElementById(`${name}-val`);
   const s = gaugeState[name] || (gaugeState[name] = { value: 0, raf: 0 });
+  if (reduceMotion) {
+    s.value = target;
+    drawGauge(canvas, target);
+    valEl.textContent = Math.round(target);
+    return;
+  }
   const from = s.value;
   const start = performance.now();
   const duration = 650;
