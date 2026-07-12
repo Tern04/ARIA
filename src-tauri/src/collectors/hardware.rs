@@ -68,7 +68,100 @@ fn spawn_gpu(app: AppHandle) {
     });
 }
 
-#[cfg(not(target_os = "macos"))]
+/// GPU utilization from the PDH "GPU Engine" counters — the same numbers
+/// Task Manager shows. The 3D engine type tracks its headline GPU figure
+/// closely enough for a gauge. Utilization is a delta counter, so the query
+/// handle must live across samples: the whole lifecycle runs on one plain
+/// thread (AppHandle is Send, emitting from it is fine).
+#[cfg(target_os = "windows")]
+fn spawn_gpu(app: AppHandle) {
+    use tauri::Emitter;
+    use windows::core::w;
+    use windows::Win32::System::Performance::{
+        PdhAddEnglishCounterW, PdhCollectQueryData, PdhOpenQueryW, PDH_HCOUNTER, PDH_HQUERY,
+    };
+
+    const GPU_POLL: Duration = Duration::from_secs(5);
+
+    std::thread::spawn(move || {
+        let mut query = PDH_HQUERY::default();
+        let mut counter = PDH_HCOUNTER::default();
+        unsafe {
+            if PdhOpenQueryW(None, 0, &mut query) != 0 {
+                eprintln!("gpu: PdhOpenQuery failed; gauge disabled");
+                return;
+            }
+            if PdhAddEnglishCounterW(
+                query,
+                w!(r"\GPU Engine(*engtype_3D)\Utilization Percentage"),
+                0,
+                &mut counter,
+            ) != 0
+            {
+                eprintln!("gpu: GPU Engine counter unavailable; gauge disabled");
+                return;
+            }
+            // Prime the baseline; deltas start with the second collect.
+            let _ = PdhCollectQueryData(query);
+        }
+        loop {
+            std::thread::sleep(GPU_POLL);
+            if let Some(gpu) = sample_gpu_pdh(query, counter) {
+                if let Err(e) = app.emit("gpu", GpuStats { gpu }) {
+                    eprintln!("gpu emit failed: {e}");
+                }
+            }
+        }
+    });
+}
+
+/// Sum the per-process 3D-engine instances into one utilization figure.
+#[cfg(target_os = "windows")]
+fn sample_gpu_pdh(
+    query: windows::Win32::System::Performance::PDH_HQUERY,
+    counter: windows::Win32::System::Performance::PDH_HCOUNTER,
+) -> Option<f32> {
+    use windows::Win32::System::Performance::{
+        PdhCollectQueryData, PdhGetFormattedCounterArrayW, PDH_FMT_COUNTERVALUE_ITEM_W,
+        PDH_FMT_DOUBLE, PDH_MORE_DATA,
+    };
+
+    unsafe {
+        if PdhCollectQueryData(query) != 0 {
+            return None;
+        }
+        // Two-call pattern: first call sizes the buffer, second fills it.
+        let mut buf_size = 0u32;
+        let mut count = 0u32;
+        let status =
+            PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut buf_size, &mut count, None);
+        if status != PDH_MORE_DATA || buf_size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; buf_size as usize];
+        if PdhGetFormattedCounterArrayW(
+            counter,
+            PDH_FMT_DOUBLE,
+            &mut buf_size,
+            &mut count,
+            Some(buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W),
+        ) != 0
+        {
+            return None;
+        }
+        let items = std::slice::from_raw_parts(
+            buf.as_ptr() as *const PDH_FMT_COUNTERVALUE_ITEM_W,
+            count as usize,
+        );
+        let total: f64 = items
+            .iter()
+            .map(|item| item.FmtValue.Anonymous.doubleValue)
+            .sum();
+        Some((total as f32).clamp(0.0, 100.0))
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn spawn_gpu(_app: AppHandle) {}
 
 #[cfg(target_os = "macos")]

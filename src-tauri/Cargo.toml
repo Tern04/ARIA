@@ -33,6 +33,17 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "sync-s
 rfc2047-decoder = "1"
 chrono = "0.4"
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",    # desktop-layer parenting (WorkerW)
+    "Win32_UI_Input_KeyboardAndMouse", # Alt-key gate, idle time
+    "Win32_System_SystemInformation",  # GetTickCount
+    "Win32_System_Threading",          # foreground process name
+    "Win32_System_Performance",        # PDH GPU counters
+    "Media_Control",                   # SMTC now-playing (WinRT)
+] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 # Machine-bound encryption for the macOS dev-mode secrets file.

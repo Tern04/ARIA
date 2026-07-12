@@ -56,11 +56,11 @@ pub async fn music_play_playlist(app: AppHandle, name: String) -> Result<(), Str
 }
 
 fn sample_now() -> MusicState {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     {
         sample_music()
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         MusicState::Stopped
     }
@@ -132,12 +132,70 @@ fn run_osascript(script: &str) -> Result<String, String> {
     }
 }
 
-/// Windows (SMTC) and Linux (MPRIS) transport control land with those machines.
-#[cfg(not(target_os = "macos"))]
+/// Windows: whatever app owns the system media session (Spotify, a browser,
+/// Apple Music for Windows…) — the same source the media keys control.
+#[cfg(target_os = "windows")]
+fn control(action: &str) -> Result<(), String> {
+    use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as Manager;
+
+    let run = || -> windows::core::Result<()> {
+        let mgr = Manager::RequestAsync()?.join()?;
+        let Ok(session) = mgr.GetCurrentSession() else {
+            return Ok(()); // nothing playing anywhere; nothing to control
+        };
+        match action {
+            "playpause" => session.TryTogglePlayPauseAsync()?.join()?,
+            "next" => session.TrySkipNextAsync()?.join()?,
+            "previous" => session.TrySkipPreviousAsync()?.join()?,
+            _ => unreachable!(),
+        };
+        Ok(())
+    };
+    match action {
+        "playpause" | "next" | "previous" => run().map_err(|e| e.to_string()),
+        other => Err(format!("unknown music action: {other}")),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sample_music() -> MusicState {
+    use windows::Media::Control::{
+        GlobalSystemMediaTransportControlsSessionManager as Manager,
+        GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status,
+    };
+
+    let sample = || -> windows::core::Result<MusicState> {
+        let mgr = Manager::RequestAsync()?.join()?;
+        let Ok(session) = mgr.GetCurrentSession() else {
+            return Ok(MusicState::Stopped);
+        };
+        let status = session.GetPlaybackInfo()?.PlaybackStatus()?;
+        let props = session.TryGetMediaPropertiesAsync()?.join()?;
+        let title = props.Title()?.to_string();
+        let artist = props.Artist()?.to_string();
+        if title.is_empty() {
+            return Ok(MusicState::Stopped);
+        }
+        Ok(match status {
+            Status::Playing => MusicState::Playing { title, artist },
+            Status::Paused => MusicState::Paused { title, artist },
+            _ => MusicState::Stopped,
+        })
+    };
+    sample().unwrap_or_else(|e| {
+        eprintln!("music smtc: {e}");
+        MusicState::Stopped
+    })
+}
+
+/// Linux (MPRIS) transport control lands with that machine.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn control(_action: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Playlists are an Apple Music concept; SMTC/MPRIS have no equivalent, so
+/// the widget simply renders no playlist chips elsewhere.
 #[cfg(not(target_os = "macos"))]
 fn playlists() -> Result<Vec<String>, String> {
     Ok(Vec::new())
@@ -148,7 +206,7 @@ fn play_playlist(_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -163,8 +221,8 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// Windows (SMTC) and Linux (MPRIS) variants land with those machines.
-#[cfg(not(target_os = "macos"))]
+/// The Linux (MPRIS) variant lands with that machine.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn spawn(_app: AppHandle) {}
 
 #[cfg(target_os = "macos")]

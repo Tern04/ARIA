@@ -1179,6 +1179,10 @@ function initThemePicker() {
 window.addEventListener("DOMContentLoaded", async () => {
   updateClock();
   setInterval(updateClock, 1000);
+  // The interactivity gate is ⌥ on macOS, Alt elsewhere.
+  if (!navigator.platform.includes("Mac")) {
+    document.getElementById("mod-hint").textContent = "alt interact";
+  }
   initThemePicker();
   initLayout();
   initGauges();

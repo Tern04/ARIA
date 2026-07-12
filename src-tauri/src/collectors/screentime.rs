@@ -22,7 +22,7 @@ struct AppTime {
     secs: u64,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut day = today();
@@ -57,8 +57,8 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// Per-OS trackers for Windows/Linux land with those machines.
-#[cfg(not(target_os = "macos"))]
+/// The Linux tracker lands with that machine.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn spawn(_app: AppHandle) {}
 
 fn summarize(usage: &HashMap<String, u64>) -> ScreenTime {
@@ -147,4 +147,59 @@ fn idle_seconds() -> f64 {
         fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
     }
     unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) }
+}
+
+/// Executable stem of the foreground window's process (e.g. "chrome").
+#[cfg(target_os = "windows")]
+fn frontmost_app(_app: &AppHandle) -> Option<String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_invalid() {
+            return None;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 512];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            proc,
+            PROCESS_NAME_WIN32,
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(proc);
+        ok.ok()?;
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        std::path::Path::new(&path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn idle_seconds() -> f64 {
+    use windows::Win32::System::SystemInformation::GetTickCount;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+
+    let mut info = LASTINPUTINFO {
+        cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        return 0.0; // unknown — count the tick rather than drop it
+    }
+    let now = unsafe { GetTickCount() };
+    now.wrapping_sub(info.dwTime) as f64 / 1000.0
 }

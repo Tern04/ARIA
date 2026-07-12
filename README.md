@@ -60,14 +60,19 @@ Everything works here — this is the primary platform.
 
 ### Windows
 
-Builds and runs the cross-platform widgets (GitHub, Mail, Crypto, STAG, Discord, CPU/RAM). Not yet ported:
+Fully implemented, pending verification on real hardware (developed and type-checked cross-target from macOS):
 
-- desktop-layer window placement (currently a documented no-op — the window behaves like a normal one)
-- Screen time, media controls (SMTC), GPU gauge
+- desktop-layer placement via WorkerW/Progman parenting (Rainmeter technique), **Alt** instead of ⌥ for interaction
+- NOW PLAYING reads the system media session (SMTC) — covers Spotify, browsers, Apple Music for Windows, anything the media keys control; transport buttons work, playlist chips are Apple-Music-only and don't render
+- Screen time via foreground window + last-input idle detection
+- GPU gauge from the "GPU Engine" performance counters (same source as Task Manager)
+- Secrets go to Windows Credential Manager
+
+If something misbehaves, it will be one of these — issues welcome.
 
 ### Linux (Pop!_OS / GNOME targeted)
 
-Same status as Windows: the cross-platform widgets work; the desktop layer (`_NET_WM_WINDOW_TYPE_DESKTOP`), screen time, MPRIS media and GPU gauge are pending. Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
+Cross-platform widgets work; the desktop layer (`_NET_WM_WINDOW_TYPE_DESKTOP`), screen time, MPRIS media and GPU gauge are pending. Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
 
 ## Connecting the services
 
