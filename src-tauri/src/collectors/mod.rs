@@ -1,5 +1,7 @@
-mod email;
-mod github;
+mod crypto;
+pub mod discord;
+pub mod email;
+pub mod github;
 mod hardware;
 pub mod music;
 mod screentime;
@@ -41,7 +43,6 @@ fn keychain_secret(account: &str) -> Result<String, String> {
 }
 
 /// Persist a secret using the same backend split as `keychain_secret`.
-#[allow(dead_code)]
 fn store_secret(account: &str, value: &str) -> Result<(), String> {
     #[cfg(all(debug_assertions, target_os = "macos"))]
     if USE_DEV_FILE {
@@ -50,6 +51,18 @@ fn store_secret(account: &str, value: &str) -> Result<(), String> {
     keyring::Entry::new("ARIA", account)
         .map_err(|e| e.to_string())?
         .set_password(value)
+        .map_err(|e| e.to_string())
+}
+
+/// Remove a secret (log-out) using the same backend split as `keychain_secret`.
+fn delete_secret(account: &str) -> Result<(), String> {
+    #[cfg(all(debug_assertions, target_os = "macos"))]
+    if USE_DEV_FILE {
+        return secrets_file::remove(account);
+    }
+    keyring::Entry::new("ARIA", account)
+        .map_err(|e| e.to_string())?
+        .delete_credential()
         .map_err(|e| e.to_string())
 }
 
@@ -153,6 +166,12 @@ mod secrets_file {
         save(&map)
     }
 
+    pub fn remove(account: &str) -> Result<(), String> {
+        let mut map = load().unwrap_or_default();
+        map.remove(account);
+        save(&map)
+    }
+
     /// Re-encrypt the file if it is still legacy plaintext (one-time upgrade).
     pub fn migrate_if_plaintext() {
         let Ok(bytes) = std::fs::read(match path() {
@@ -185,6 +204,8 @@ pub fn spawn_all(app: &AppHandle) {
     screentime::spawn(app.clone());
     music::spawn(app.clone());
     github::spawn(app.clone(), rx.clone());
+    crypto::spawn(app.clone(), rx.clone());
+    discord::spawn(app.clone(), rx.clone());
     email::spawn(app.clone(), rx.clone());
     stag::spawn(app.clone(), rx);
 }

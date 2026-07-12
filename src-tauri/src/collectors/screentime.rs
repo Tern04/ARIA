@@ -7,7 +7,8 @@ use tauri::{AppHandle, Emitter, Manager};
 const TICK: Duration = Duration::from_secs(5);
 // Ticks are not counted when the user has been idle longer than this.
 const IDLE_LIMIT: f64 = 120.0;
-const TOP_APPS: usize = 4;
+// Enough rows to fill the large widget size; smaller sizes clip the rest.
+const TOP_APPS: usize = 8;
 
 #[derive(Serialize, Clone)]
 struct ScreenTime {

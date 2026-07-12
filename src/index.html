@@ -39,9 +39,14 @@
             <div class="theme-menu" id="theme-menu" hidden>
               <button data-theme="studio">Studio</button>
               <button data-theme="jarvis">JARVIS</button>
-              <button data-theme="reactor">Reactor</button>
+              <button data-theme="porcelain">Porcelain</button>
             </div>
           </div>
+          <button class="pin-toggle" id="edit-toggle" aria-label="Edit layout" title="Edit layout">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
+            </svg>
+          </button>
           <span class="mod-hint" id="mod-hint">⌥ interact</span>
         </div>
         <div class="vitals" aria-hidden="true">
@@ -74,6 +79,7 @@
           <span class="status-item" id="status-stag"><i></i>STAG</span>
           <span class="status-item" id="status-github"><i></i>GITHUB</span>
           <span class="status-item" id="status-mail"><i></i>MAIL</span>
+          <span class="status-item" id="status-discord"><i></i>DISCORD</span>
           <span class="status-item" id="status-music"><i></i>MUSIC</span>
         </div>
         <div class="hud-clock">
@@ -87,17 +93,17 @@
           <h2 class="widget-label">SYSTEM</h2>
           <div class="gauge-row">
             <div class="gauge">
-              <canvas class="gauge-canvas" id="gauge-cpu" width="100" height="100"></canvas>
+              <canvas class="gauge-canvas" id="gauge-cpu" width="240" height="240"></canvas>
               <div class="gauge-value"><span id="cpu-val">--</span><span class="unit">%</span></div>
               <div class="gauge-name">CPU</div>
             </div>
             <div class="gauge">
-              <canvas class="gauge-canvas" id="gauge-ram" width="100" height="100"></canvas>
+              <canvas class="gauge-canvas" id="gauge-ram" width="240" height="240"></canvas>
               <div class="gauge-value"><span id="ram-val">--</span><span class="unit">%</span></div>
               <div class="gauge-name">RAM</div>
             </div>
             <div class="gauge">
-              <canvas class="gauge-canvas" id="gauge-gpu" width="100" height="100"></canvas>
+              <canvas class="gauge-canvas" id="gauge-gpu" width="240" height="240"></canvas>
               <div class="gauge-value"><span id="gpu-val">--</span><span class="unit">%</span></div>
               <div class="gauge-name">GPU</div>
             </div>
@@ -108,6 +114,13 @@
           <h2 class="widget-label">GITHUB</h2>
           <div class="widget-body">
             <span class="disconnected">not connected</span>
+          </div>
+        </section>
+
+        <section class="widget widget--crypto" id="widget-crypto">
+          <h2 class="widget-label">CRYPTO</h2>
+          <div class="widget-body">
+            <span class="disconnected">loading…</span>
           </div>
         </section>
 
@@ -162,6 +175,12 @@
             <span class="disconnected">not connected</span>
           </div>
         </section>
+      </div>
+
+      <div class="widget-tray" id="widget-tray" hidden>
+        <span class="tray-label">HIDDEN</span>
+        <div class="tray-chips" id="tray-chips"></div>
+        <button class="tray-reset" id="tray-reset">RESET LAYOUT</button>
       </div>
     </div>
   </body>

@@ -51,7 +51,7 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
 }
 
 async fn poll(client: &reqwest::Client) -> Result<GithubState, String> {
-    let token = super::keychain_secret("github")?;
+    let token = super::keychain_secret("github").map_err(|_| "not connected".to_string())?;
 
     let (notifications, prs, repos, calendar) = tokio::join!(
         get(client, &token, "https://api.github.com/notifications?per_page=50"),
@@ -141,6 +141,37 @@ async fn contribution_calendar(
         .collect();
 
     Ok((contributions, total))
+}
+
+/// Store a PAT from the widget's login form and refresh immediately.
+#[tauri::command]
+pub async fn github_setup(app: AppHandle, token: String) -> Result<(), String> {
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        return Err("token is required".into());
+    }
+    super::store_secret("github", &token)?;
+    let client = reqwest::Client::builder()
+        .user_agent("aria-hud")
+        .build()
+        .map_err(|e| e.to_string())?;
+    let state = poll(&client)
+        .await
+        .unwrap_or_else(|reason| GithubState::Disconnected { reason });
+    app.emit("github", state).map_err(|e| e.to_string())
+}
+
+/// Log out: forget the PAT. The poll loop keeps re-emitting disconnected.
+/// Best-effort delete: an already-missing secret must not block logging out.
+#[tauri::command]
+pub fn github_logout(app: AppHandle) -> Result<(), String> {
+    if let Err(e) = super::delete_secret("github") {
+        eprintln!("github: secret delete: {e}");
+    }
+    let state = GithubState::Disconnected {
+        reason: "not connected".into(),
+    };
+    app.emit("github", state).map_err(|e| e.to_string())
 }
 
 async fn get(client: &reqwest::Client, token: &str, url: &str) -> Result<serde_json::Value, String> {

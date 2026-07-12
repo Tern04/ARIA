@@ -350,6 +350,19 @@ pub async fn stag_login(app: AppHandle) -> Result<(), String> {
     app.emit("stag", state).map_err(|e| e.to_string())
 }
 
+/// Log out: forget the STAG ticket. The poll loop keeps showing disconnected.
+/// Best-effort delete: an already-missing secret must not block logging out.
+#[tauri::command]
+pub fn stag_logout(app: AppHandle) -> Result<(), String> {
+    if let Err(e) = super::delete_secret("stag") {
+        eprintln!("stag: secret delete: {e}");
+    }
+    let state = StagState::Disconnected {
+        reason: "not connected".into(),
+    };
+    app.emit("stag", state).map_err(|e| e.to_string())
+}
+
 fn wait_for_ticket(listener: TcpListener) -> Result<String, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let deadline = Instant::now() + LOGIN_TIMEOUT;

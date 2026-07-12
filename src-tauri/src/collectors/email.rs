@@ -3,8 +3,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 const POLL: Duration = Duration::from_secs(300);
-const RECENT_PER_ACCOUNT: u32 = 5;
-const RECENT_SHOWN: usize = 5;
+// Enough rows to fill the large widget size; smaller sizes clip the rest.
+const RECENT_PER_ACCOUNT: u32 = 8;
+const RECENT_SHOWN: usize = 8;
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -16,6 +17,8 @@ enum EmailState {
 #[derive(Serialize, Clone)]
 struct AccountSummary {
     label: String,
+    user: String,
+    host: String,
     unread: Option<u32>, // None when this account errored this poll
 }
 
@@ -36,36 +39,16 @@ struct ImapAccount {
     user: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Default)]
 struct MailConfig {
     accounts: Vec<ImapAccount>,
-}
-
-impl Default for MailConfig {
-    fn default() -> Self {
-        Self {
-            accounts: vec![ImapAccount {
-                label: "MAIL".into(),
-                host: "imap.example.com".into(),
-                user: String::new(),
-            }],
-        }
-    }
 }
 
 pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
     tauri::async_runtime::spawn(async move {
         let _ = ready.wait_for(|r| *r).await;
         loop {
-            let state = match load_config(&app) {
-                Ok(cfg) => {
-                    tauri::async_runtime::spawn_blocking(move || fetch_all(&cfg))
-                        .await
-                        .unwrap_or_else(|e| EmailState::Disconnected { reason: e.to_string() })
-                }
-                Err(reason) => EmailState::Disconnected { reason },
-            };
-            if let Err(e) = app.emit("email", state) {
+            if let Err(e) = refresh(&app).await {
                 eprintln!("email emit failed: {e}");
             }
             tokio::time::sleep(POLL).await;
@@ -77,20 +60,20 @@ fn fetch_all(cfg: &MailConfig) -> EmailState {
     let mut accounts = Vec::new();
     let mut messages: Vec<MailMessage> = Vec::new();
     for account in &cfg.accounts {
+        let summary = |unread| AccountSummary {
+            label: account.label.clone(),
+            user: account.user.clone(),
+            host: account.host.clone(),
+            unread,
+        };
         match fetch_inbox(account) {
             Ok((unread, mut msgs)) => {
-                accounts.push(AccountSummary {
-                    label: account.label.clone(),
-                    unread: Some(unread),
-                });
+                accounts.push(summary(Some(unread)));
                 messages.append(&mut msgs);
             }
             Err(e) => {
                 eprintln!("mail {}: {e}", account.label);
-                accounts.push(AccountSummary {
-                    label: account.label.clone(),
-                    unread: None,
-                });
+                accounts.push(summary(None));
             }
         }
     }
@@ -99,26 +82,92 @@ fn fetch_all(cfg: &MailConfig) -> EmailState {
     EmailState::Connected { accounts, messages }
 }
 
-/// Reads mail.json from the app config dir; writes a template on first run
-/// so the user has a file to fill in.
-fn load_config(app: &AppHandle) -> Result<MailConfig, String> {
+fn config_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    let path = dir.join("mail.json");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("mail.json"))
+}
 
+/// Reads mail.json from the app config dir. Accounts are managed from the
+/// widget's login form (mail_add_account / mail_remove_account); hand-editing
+/// the file still works.
+fn load_config(app: &AppHandle) -> Result<MailConfig, String> {
+    let path = config_path(app)?;
     if !path.exists() {
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let template =
-            serde_json::to_string_pretty(&MailConfig::default()).map_err(|e| e.to_string())?;
-        std::fs::write(&path, template).map_err(|e| e.to_string())?;
-        return Err("mail.json created — fill in accounts".into());
+        return Err("no mail accounts".into());
     }
-
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let cfg: MailConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    if cfg.accounts.iter().all(|a| a.user.is_empty()) {
-        return Err("mail.json has no accounts configured".into());
+    let mut cfg: MailConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    cfg.accounts.retain(|a| !a.user.is_empty());
+    if cfg.accounts.is_empty() {
+        return Err("no mail accounts".into());
     }
     Ok(cfg)
+}
+
+fn save_config(app: &AppHandle, cfg: &MailConfig) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    std::fs::write(config_path(app)?, json).map_err(|e| e.to_string())
+}
+
+/// Config for the mutation path: a missing file is an empty config, but a
+/// corrupt one is a hard error — rewriting it would wipe existing accounts.
+fn read_config_for_update(app: &AppHandle) -> Result<MailConfig, String> {
+    let path = config_path(app)?;
+    if !path.exists() {
+        return Ok(MailConfig::default());
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&raw).map_err(|e| format!("mail.json is invalid, fix it first: {e}"))
+}
+
+/// Fetch all accounts and emit — shared by the poll loop and the commands.
+async fn refresh(app: &AppHandle) -> Result<(), String> {
+    let state = match load_config(app) {
+        Ok(cfg) => tauri::async_runtime::spawn_blocking(move || fetch_all(&cfg))
+            .await
+            .unwrap_or_else(|e| EmailState::Disconnected {
+                reason: e.to_string(),
+            }),
+        Err(reason) => EmailState::Disconnected { reason },
+    };
+    app.emit("email", state).map_err(|e| e.to_string())
+}
+
+/// Add (or replace) an account from the widget form: password to the secret
+/// store, account to mail.json, then refresh immediately.
+#[tauri::command]
+pub async fn mail_add_account(
+    app: AppHandle,
+    label: String,
+    host: String,
+    user: String,
+    password: String,
+) -> Result<(), String> {
+    let label = label.trim().to_string();
+    let host = host.trim().to_string();
+    let user = user.trim().to_string();
+    if label.is_empty() || host.is_empty() || user.is_empty() || password.is_empty() {
+        return Err("all fields are required".into());
+    }
+    let mut cfg = read_config_for_update(&app)?;
+    super::store_secret(&format!("imap:{user}"), &password)?;
+    cfg.accounts.retain(|a| a.user != user);
+    cfg.accounts.push(ImapAccount { label, host, user });
+    save_config(&app, &cfg)?;
+    refresh(&app).await
+}
+
+#[tauri::command]
+pub async fn mail_remove_account(app: AppHandle, user: String) -> Result<(), String> {
+    let mut cfg = read_config_for_update(&app)?;
+    cfg.accounts.retain(|a| a.user != user);
+    save_config(&app, &cfg)?;
+    // Best-effort: a missing secret must not block removing the account.
+    if let Err(e) = super::delete_secret(&format!("imap:{user}")) {
+        eprintln!("mail: secret delete for {user}: {e}");
+    }
+    refresh(&app).await
 }
 
 /// Short-lived connection by design: connect, read-only fetch, logout.

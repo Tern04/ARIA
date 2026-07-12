@@ -20,7 +20,14 @@ const THEMES = {
     glow: true,
   },
 };
-THEMES.reactor = THEMES.jarvis;
+THEMES.porcelain = {
+  accent: "#3450d2",
+  track: "rgba(22, 24, 30, 0.09)",
+  r: 0.4,
+  lw: 0.06,
+  tip: "#16181d",
+  glow: false,
+};
 
 function themeConfig() {
   return THEMES[document.documentElement.dataset.theme] || THEMES.studio;

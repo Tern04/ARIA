@@ -1,38 +1,38 @@
 /* ═══════════════════════════════════════════════════════════════
-   ARIA — "operations console" redesign
-   Warm near-monochrome, single amber signal accent, frosted glass,
-   editorial type. No glow, restrained motion.
+   ARIA — "porcelain" theme
+   Paper-white glass, ink typography, mono ledger labels with double
+   hairline rules, one ultramarine accent reserved for live data.
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
-  /* surfaces */
-  --bg-panel: rgba(19, 21, 27, 0.74);
-  --bg-inset: rgba(255, 255, 255, 0.03);
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --shadow: 0 12px 38px rgba(0, 0, 0, 0.4);
-  /* subtle top highlight gives the frosted glass real dimensionality */
-  --highlight: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  /* surfaces: paper-white glass over the wallpaper */
+  --bg-panel: rgba(246, 245, 241, 0.8);
+  --bg-inset: rgba(22, 24, 30, 0.04);
+  --border: rgba(22, 24, 30, 0.12);
+  --border-strong: rgba(22, 24, 30, 0.26);
+  --shadow: 0 14px 34px rgba(28, 32, 42, 0.24);
+  /* a bright top edge keeps the glass reading as glass on light panels */
+  --highlight: inset 0 1px 0 rgba(255, 255, 255, 0.85);
 
-  /* text */
-  --text: #eceae3;
-  --text-dim: #979ba4;
-  --text-faint: #5f636d;
+  /* ink */
+  --text: #16181d;
+  --text-dim: #555b66;
+  --text-faint: #8a909b;
 
-  /* accent + semantics */
-  --accent: #e8ac53;
-  --accent-strong: #f2bd6b;
-  --accent-soft: rgba(232, 172, 83, 0.13);
-  --good: #6bc39a;
-  --alert: #e57b63;
+  /* one working accent: ultramarine, reserved for live data */
+  --accent: #3450d2;
+  --accent-strong: #2436a8;
+  --accent-soft: rgba(52, 80, 210, 0.12);
+  --good: #177a4b;
+  --alert: #c23a2b;
 
-  /* type */
-  --font-display: "Space Grotesk", system-ui, sans-serif;
+  /* type: mono ledger labels, Inter body, mono numerals */
+  --font-display: "JetBrains Mono", ui-monospace, monospace;
   --font-body: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --radius: 14px;
-  --radius-sm: 9px;
+  --radius: 16px;
+  --radius-sm: 10px;
 }
 
 * {
@@ -113,9 +113,9 @@ body {
 }
 
 @keyframes live-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(232, 172, 83, 0.5); }
-  70% { box-shadow: 0 0 0 7px rgba(232, 172, 83, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(232, 172, 83, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(52, 80, 210, 0.45); }
+  70% { box-shadow: 0 0 0 7px rgba(52, 80, 210, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 80, 210, 0); }
 }
 
 .pin-toggle {
@@ -435,11 +435,11 @@ body.interactive .mod-hint {
 
 .gh-cell {
   border-radius: 2px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(22, 24, 30, 0.06);
 }
 
-.gh-cell--1 { background: rgba(232, 172, 83, 0.28); }
-.gh-cell--2 { background: rgba(232, 172, 83, 0.6); }
+.gh-cell--1 { background: rgba(52, 80, 210, 0.24); }
+.gh-cell--2 { background: rgba(52, 80, 210, 0.55); }
 .gh-cell--3 { background: var(--accent); }
 .gh-cell--pad { background: transparent; }
 
@@ -755,7 +755,7 @@ body.interactive .mod-hint {
 
 .course-tag--req {
   color: var(--accent);
-  border-color: rgba(232, 172, 83, 0.4);
+  border-color: rgba(52, 80, 210, 0.4);
 }
 
 .connect-btn {
@@ -769,7 +769,7 @@ body.interactive .mod-hint {
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.08em;
-  color: #1a140a;
+  color: #f6f5f1;
   cursor: pointer;
   transition: background 0.2s, transform 0.1s;
 }
@@ -874,11 +874,11 @@ body.interactive .mod-hint {
   width: 42px;
   height: 42px;
   color: var(--accent);
-  border-color: rgba(232, 172, 83, 0.4);
+  border-color: rgba(52, 80, 210, 0.4);
 }
 
 .music-btn--play:hover {
-  color: #1a140a;
+  color: #f6f5f1;
   background: var(--accent);
   border-color: var(--accent);
 }
@@ -911,7 +911,7 @@ body.interactive .mod-hint {
 
 .playlist-item:hover {
   color: var(--accent);
-  border-color: rgba(232, 172, 83, 0.4);
+  border-color: rgba(52, 80, 210, 0.4);
   background: var(--accent-soft);
 }
 
@@ -944,3 +944,26 @@ body.interactive .mod-hint {
 
 /* theme-switcher: hide other themes' header elements */
 .vitals { display: none; }
+
+/* ── signature: ledger rules ────────────────────────────────
+   Every widget label sits on a double hairline, like an account
+   heading in a printed ledger. */
+.widget-label {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 7px;
+}
+
+.widget-label::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -4px;
+  height: 1px;
+  background: var(--border);
+}
+
+.widget-label {
+  letter-spacing: 0.22em;
+}

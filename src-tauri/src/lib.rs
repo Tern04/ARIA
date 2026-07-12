@@ -22,7 +22,14 @@ pub fn run() {
             collectors::music::music_control,
             collectors::music::music_playlists,
             collectors::music::music_play_playlist,
-            collectors::stag::stag_login
+            collectors::stag::stag_login,
+            collectors::stag::stag_logout,
+            collectors::discord::discord_setup,
+            collectors::discord::discord_logout,
+            collectors::github::github_setup,
+            collectors::github::github_logout,
+            collectors::email::mail_add_account,
+            collectors::email::mail_remove_account
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
