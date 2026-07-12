@@ -1,32 +1,111 @@
 # ARIA
 
-**Autonomous Reactive Intelligent Assistant** — a cross-platform desktop HUD that pulls live data from your university schedule, GitHub, email, and system hardware into a single sci-fi overlay window, styled after Stark Industries.
+**Autonomous Reactive Intelligent Assistant** — a desktop HUD dashboard that lives on your wallpaper: below your windows, above the background, Rainmeter-style. One transparent, frameless [Tauri](https://tauri.app) window renders live widgets; all data collection runs in the Rust core. No browser, no Electron, no cloud.
 
-Runs on macOS, Windows, and Pop!_OS from one codebase. No browser, no Electron — built with Tauri so the binary stays small and the window can be transparent and frameless.
+Built around a student/dev workflow at ZČU, but every widget is optional and the board is fully rearrangeable.
 
-## What It Shows
+## Widgets
 
-- **Today's schedule** — pulls from STAG (ZČU university system) via REST API, shows today's classes and a countdown to the next exam
-- **GitHub activity** — open pull requests and CI status for your repos, via the GitHub REST API
-- **Unread email** — unread count from Seznam.cz via IMAP
-- **Hardware** — CPU, RAM, disk usage via psutil; on Apple Silicon, GPU/CPU utilization from `powermetrics`
-- **Screen time** — tracks active window to show where your time goes (custom per-OS implementation)
-- **Now playing** — current Apple Music track, sourced from AppleScript on macOS, WinRT SMTC on Windows, and MPRIS/D-Bus on Linux
+| Widget | Data | Source |
+|---|---|---|
+| SYSTEM | CPU / RAM / GPU gauges, animated | `sysinfo`; GPU via `powermetrics` (Apple Silicon) |
+| STAG / ZČU | Weekly timetable grid + course list with credits | STAG REST API (`stag-ws.zcu.cz`), CAS browser login |
+| GITHUB | Notifications, open PRs, last-pushed repo, contribution wall | GitHub REST + GraphQL, personal access token |
+| MAIL | Multi-account unread counts + recent messages, per-account filter | IMAP (read-only, never marks as seen) |
+| CRYPTO | BTC/ETH price, change + sparkline over 1D / 1M / 1Y | CoinGecko (free, no key) |
+| NOW PLAYING | Track info, transport controls, playlist shuffle chips | Apple Music (macOS) |
+| SCREEN TIME | Daily total + top apps by foreground time | Local tracking, idle-aware |
+| DISCORD | Voice channels sorted by how much your group actually uses them (person-minutes tracked locally), who's in them (mute/deafen/streaming), plus online status and current game/song of picked friends | Discord Gateway, own bot token |
 
-## Stack
+## The board
 
-| Layer | Tech |
-|---|---|
-| App shell | Tauri (Rust + WebView) |
-| UI | HTML/CSS/SVG/Canvas, Orbitron/Rajdhani fonts |
-| Data | Rust IPC commands + Python subprocesses |
-| Cache | SQLite or JSON (local only, no cloud) |
+- 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
+- Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
+- Three themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light).
+- The HUD is click-through so it never steals input. Hold **⌥ Option** to interact with it (buttons, chips, edit mode). The pin button flips it above all windows temporarily.
 
-The window is transparent and borderless — it sits on your desktop as an overlay, not a conventional app window.
+## Accounts & secrets
+
+Each service widget has its own login: disconnected widgets show a login form inline, connected ones get a ⚙ gear in edit mode with log-out / reconfigure. Secrets (tokens, IMAP passwords) go to the OS credential store — Keychain / Credential Manager / Secret Service via the `keyring` crate. In macOS *dev* builds they live in `~/.aria-dev-secrets.json`, encrypted with a machine-bound key (Tauri dev re-signs every rebuild, which would otherwise trigger a Keychain prompt storm).
+
+Nothing leaves your machine except the API calls to the services themselves.
 
 ## Setup
 
-> Documentation will live here as modules are implemented.
+### Prerequisites (all platforms)
+
+- [Rust](https://rustup.rs) (stable)
+- [Node.js](https://nodejs.org) (for the Tauri CLI only — the frontend has no build step)
+- Platform Tauri deps: see [tauri.app prerequisites](https://tauri.app/start/prerequisites/) (Xcode CLT on macOS, WebView2 on Windows, `webkit2gtk` etc. on Linux)
+
+```sh
+git clone https://github.com/Tern04/ARIA.git
+cd ARIA
+npm install
+npm run tauri dev     # development
+npm run tauri build   # release bundle
+```
+
+### macOS
+
+Everything works here — this is the primary platform.
+
+- **GPU gauge** shells out to `powermetrics`, which needs root. Allow it without a password prompt:
+  ```sh
+  echo "$(whoami) ALL=(ALL) NOPASSWD: /usr/bin/powermetrics" | sudo tee /etc/sudoers.d/powermetrics
+  ```
+  Without this the GPU ring simply stays empty.
+- **Now Playing**: the first playback poll triggers a macOS Automation prompt ("aria wants to control Music") — click OK once.
+- Remember: hold **⌥** to click anything on the HUD.
+
+### Windows
+
+Builds and runs the cross-platform widgets (GitHub, Mail, Crypto, STAG, Discord, CPU/RAM). Not yet ported:
+
+- desktop-layer window placement (currently a documented no-op — the window behaves like a normal one)
+- Screen time, media controls (SMTC), GPU gauge
+
+### Linux (Pop!_OS / GNOME targeted)
+
+Same status as Windows: the cross-platform widgets work; the desktop layer (`_NET_WM_WINDOW_TYPE_DESKTOP`), screen time, MPRIS media and GPU gauge are pending. Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
+
+## Connecting the services
+
+### GitHub
+Create a [personal access token](https://github.com/settings/tokens); the contribution wall additionally needs the `read:user` scope (degrades gracefully without it). Paste it into the GitHub widget.
+
+### Mail
+Add accounts straight in the MAIL widget: label, IMAP host, user, password (for providers with 2FA use an app password). Accounts land in `mail.json` (paths below), passwords in the credential store. IMAP access is read-only — unread flags are never touched.
+
+### STAG (ZČU)
+Click CONNECT in the widget — it opens the university CAS login in your browser and catches the ticket on localhost. Log out via the widget's gear.
+
+### Discord
+Needs a bot in the server you want to watch (~10 min, free):
+
+1. [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application** → **Bot** tab → **Reset Token**, copy it.
+2. Same tab: enable **Presence Intent** and **Server Members Intent** (privileged toggles).
+3. Invite it with zero permissions: `https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot&permissions=0` — membership is all it needs. Give its role access to any restricted voice channels you want visible.
+4. In Discord enable Developer Mode (Settings → Advanced), right-click the server → **Copy Server ID**.
+5. Paste token + server ID into the widget.
+6. Friends list: right-click a user → **Copy User ID**, then add `{ "id": "...", "name": "..." }` entries to `discord.json` (restart to apply).
+
+Channel "popularity" accrues automatically — one point per person-minute in voice, stored locally, so your group's usual channels bubble to the top.
+
+### Crypto
+No setup; CoinGecko's free API.
+
+## Files
+
+| File | Where | What |
+|---|---|---|
+| `mail.json` | app config dir¹ | mail accounts (managed by the widget, hand-editable) |
+| `discord.json` | app config dir¹ | server ID + friends list |
+| `discord-popularity.json` | app data dir¹ | per-channel person-minute tallies |
+| `screentime/` | app data dir¹ | daily usage JSONs |
+| layout / theme | `localStorage` | board arrangement, chosen theme |
+
+¹ macOS: `~/Library/Application Support/com.aria.desktop/` — Windows/Linux use the platform-standard config/data dirs.
 
 ## License
 
