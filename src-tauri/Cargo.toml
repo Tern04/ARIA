@@ -36,7 +36,8 @@ chrono = "0.4"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",    # desktop-layer parenting (WorkerW)
+    "Win32_UI_WindowsAndMessaging",    # desktop-layer z-order pinning
+    "Win32_UI_Shell",                  # SetWindowSubclass (bottom clamp)
     "Win32_UI_Input_KeyboardAndMouse", # Alt-key gate, idle time
     "Win32_System_SystemInformation",  # GetTickCount
     "Win32_System_Threading",          # foreground process name

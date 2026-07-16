@@ -46,22 +46,20 @@ pub fn set_desktop_layer(window: &WebviewWindow) {
     }
 }
 
-/// Windows: glue the HUD to the wallpaper layer by re-parenting it into the
-/// WorkerW window Explorer draws the wallpaper on (the Rainmeter/Wallpaper
-/// Engine technique) — behind every app window and the desktop icons.
+/// Windows: pin the HUD to the bottom of the z-order — above the wallpaper
+/// and desktop icons, below every app window. A normal top-level window is
+/// used on purpose: re-parenting into Explorer's wallpaper WorkerW (the
+/// Wallpaper Engine trick) puts the HUD behind SHELLDLL_DefView, which eats
+/// all mouse input, and leaves a stale frame on the wallpaper if the process
+/// dies. Called from Tauri's setup hook, which runs on the main thread (the
+/// window subclass must be installed from the thread that owns the HWND).
 #[cfg(target_os = "windows")]
 pub fn set_desktop_layer(window: &WebviewWindow) {
     let Ok(hwnd) = window.hwnd() else {
         eprintln!("desktop layer: window has no HWND");
         return;
     };
-    match win_desktop::desktop_parent() {
-        Some(parent) => {
-            win_desktop::DESKTOP_PARENT.store(parent, std::sync::atomic::Ordering::Relaxed);
-            win_desktop::reparent(hwnd.0 as isize, Some(parent));
-        }
-        None => eprintln!("desktop layer: no Progman/WorkerW found; HUD stays a normal window"),
-    }
+    win_desktop::init_desktop_layer(hwnd.0 as isize);
 }
 
 /// Linux (_NET_WM_WINDOW_TYPE_DESKTOP hint) is implemented once that machine
@@ -150,103 +148,102 @@ pub fn set_overlay(window: WebviewWindow, above: bool) -> Result<(), String> {
 /// the one used here.
 #[cfg(target_os = "windows")]
 mod win_desktop {
-    use std::sync::atomic::{AtomicIsize, Ordering};
-    use windows::core::{w, BOOL};
-    use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, FindWindowExW, FindWindowW, SendMessageTimeoutW, SetParent, SetWindowPos,
-        HWND_NOTOPMOST, HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM,
+        HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+        WINDOWPOS, WM_NCDESTROY, WM_WINDOWPOSCHANGING, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
     };
 
-    /// Wallpaper parent (WorkerW or Progman) found at startup, kept so the
-    /// pin toggle can re-attach after floating the HUD above app windows.
-    pub static DESKTOP_PARENT: AtomicIsize = AtomicIsize::new(0);
+    /// While true, the subclass proc clamps every z-order change to
+    /// HWND_BOTTOM, so click-activation can never raise the HUD above app
+    /// windows. Cleared while the pin toggle floats the HUD as an overlay.
+    static FORCE_BOTTOM: AtomicBool = AtomicBool::new(true);
+
+    const SUBCLASS_ID: usize = 1;
 
     fn hwnd(v: isize) -> HWND {
         HWND(v as *mut core::ffi::c_void)
     }
 
-    /// Ask Explorer to spawn the wallpaper WorkerW and return it. On shells
-    /// where none appears (Win11 24H2 hosts the icons under Progman itself),
-    /// Progman is the right parent instead.
-    pub fn desktop_parent() -> Option<isize> {
-        unsafe {
-            let progman = FindWindowW(w!("Progman"), None).ok()?;
-            // 0x052C is the undocumented "split off a wallpaper WorkerW"
-            // message Explorer has honored since Windows 8.
-            let _ = SendMessageTimeoutW(
-                progman,
-                0x052C,
-                WPARAM(0xD),
-                LPARAM(0x1),
-                SMTO_NORMAL,
-                1000,
-                None,
-            );
-            let mut found: isize = 0;
-            let _ = EnumWindows(
-                Some(find_worker),
-                LPARAM(&mut found as *mut isize as isize),
-            );
-            if found != 0 {
-                Some(found)
-            } else {
-                Some(progman.0 as isize)
-            }
-        }
-    }
-
-    /// The wallpaper WorkerW is the sibling right after the window hosting
-    /// the desktop icons (SHELLDLL_DefView).
-    extern "system" fn find_worker(h: HWND, out: LPARAM) -> BOOL {
-        unsafe {
-            if FindWindowExW(Some(h), None, w!("SHELLDLL_DefView"), None).is_ok() {
-                if let Ok(worker) = FindWindowExW(None, Some(h), w!("WorkerW"), None) {
-                    *(out.0 as *mut isize) = worker.0 as isize;
-                    return BOOL(0); // stop enumerating
+    /// Clamp z-order changes to the bottom while in desktop mode. Only
+    /// hwndInsertAfter is rewritten — position and size pass through, so
+    /// moving/resizing the HUD works in both modes.
+    unsafe extern "system" fn bottom_clamp(
+        h: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        match msg {
+            WM_WINDOWPOSCHANGING if FORCE_BOTTOM.load(Ordering::Relaxed) => {
+                let wp = lparam.0 as *mut WINDOWPOS;
+                if !wp.is_null() && !(*wp).flags.contains(SWP_NOZORDER) {
+                    (*wp).hwndInsertAfter = HWND_BOTTOM;
                 }
             }
-            BOOL(1)
-        }
-    }
-
-    pub fn reparent(hud: isize, parent: Option<isize>) {
-        unsafe {
-            if let Err(e) = SetParent(hwnd(hud), parent.map(hwnd)) {
-                eprintln!("desktop layer: SetParent failed: {e}");
+            WM_NCDESTROY => {
+                let _ = RemoveWindowSubclass(h, Some(bottom_clamp), SUBCLASS_ID);
             }
+            _ => {}
+        }
+        DefSubclassProc(h, msg, wparam, lparam)
+    }
+
+    pub fn init_desktop_layer(hud: isize) {
+        let h = hwnd(hud);
+        unsafe {
+            // Tool window: no taskbar button, no Alt-Tab entry — the
+            // equivalent of macOS ignoresCycle. WS_EX_NOACTIVATE is left
+            // off deliberately: the HUD has text inputs, and blocking
+            // activation would keep the webview from taking keyboard focus.
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+            SetWindowLongPtrW(
+                h,
+                GWL_EXSTYLE,
+                (ex | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize),
+            );
+            if !SetWindowSubclass(h, Some(bottom_clamp), SUBCLASS_ID, 0).as_bool() {
+                eprintln!("desktop layer: SetWindowSubclass failed; HUD may raise on click");
+            }
+            FORCE_BOTTOM.store(true, Ordering::Relaxed);
+            let _ = SetWindowPos(
+                h,
+                Some(HWND_BOTTOM),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
         }
     }
 
-    /// Pin above everything, or drop back into the wallpaper layer.
+    /// Pin above everything, or drop back to the bottom of the z-order.
+    /// HWND_BOTTOM on a topmost window also clears its topmost status, so
+    /// the return trip is a single call.
     pub fn set_overlay(hud: isize, above: bool) {
+        let insert_after = if above {
+            FORCE_BOTTOM.store(false, Ordering::Relaxed);
+            HWND_TOPMOST
+        } else {
+            FORCE_BOTTOM.store(true, Ordering::Relaxed);
+            HWND_BOTTOM
+        };
         unsafe {
-            if above {
-                reparent(hud, None);
-                let _ = SetWindowPos(
-                    hwnd(hud),
-                    Some(HWND_TOPMOST),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-            } else {
-                let _ = SetWindowPos(
-                    hwnd(hud),
-                    Some(HWND_NOTOPMOST),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-                let parent = DESKTOP_PARENT.load(Ordering::Relaxed);
-                if parent != 0 {
-                    reparent(hud, Some(parent));
-                }
-            }
+            let _ = SetWindowPos(
+                hwnd(hud),
+                Some(insert_after),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
         }
     }
 }
