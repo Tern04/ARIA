@@ -302,10 +302,6 @@ body.editing .win-resize {
 /* Large: more room means more content, not just more air.
    MAIL and SCREEN TIME reveal extra rows the collectors already send;
    the rest scale their signature element up. */
-.widget[data-size="l"] .coin-spark {
-  height: 40px;
-}
-
 .widget[data-size="l"] .gh-wall {
   max-height: 116px; /* cells grow ~13px */
   max-width: 304px;
@@ -330,6 +326,30 @@ body.editing .win-resize {
 }
 
 .widget[data-size="s"] .hw-strip {
+  display: none;
+}
+
+/* ── CRYPTO widget ──────────────────────────────────────────
+   Each coin block shares the body height equally and its sparkline
+   absorbs the block's slack, so charts grow with the widget. */
+
+.widget--crypto .coin {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.coin-sub {
+  margin-top: 5px;
+  font: 500 0.66rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.65;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget[data-size="s"] .coin-sub {
   display: none;
 }
 

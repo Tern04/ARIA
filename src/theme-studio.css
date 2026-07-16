@@ -486,7 +486,8 @@ body.interactive .mod-hint {
 .coin-spark {
   display: block;
   width: 100%;
-  height: clamp(12px, 3vh, 26px);
+  flex: 1 1 auto;
+  min-height: 12px;
   margin-top: 6px;
   opacity: 0.75;
 }

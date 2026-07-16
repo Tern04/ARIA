@@ -38,6 +38,10 @@ struct Coin {
     spark_1d: Vec<f64>,
     spark_1m: Vec<f64>,
     spark_1y: Vec<f64>,
+    market_cap: f64,
+    volume_24h: f64,
+    high_24h: f64,
+    low_24h: f64,
 }
 
 #[derive(Default)]
@@ -105,6 +109,10 @@ async fn poll(
             spark_1d: sparks[ci][0].data.clone(),
             spark_1m: sparks[ci][1].data.clone(),
             spark_1y: sparks[ci][2].data.clone(),
+            market_cap: m["market_cap"].as_f64().unwrap_or(0.0),
+            volume_24h: m["total_volume"].as_f64().unwrap_or(0.0),
+            high_24h: m["high_24h"].as_f64().unwrap_or(0.0),
+            low_24h: m["low_24h"].as_f64().unwrap_or(0.0),
         });
     }
 

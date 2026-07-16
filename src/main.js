@@ -50,6 +50,14 @@ function fmtDuration(secs) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+function fmtCompact(v) {
+  if (v >= 1e12) return `$${(v / 1e12).toFixed(2)}T`;
+  if (v >= 1e9) return `$${(v / 1e9).toFixed(1)}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(0)}M`;
+  if (v >= 1e3) return `$${(v / 1e3).toFixed(1)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
 function fmtRate(bps) {
   if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} MB/s`;
   if (bps >= 1e3) return `${Math.round(bps / 1e3)} kB/s`;
@@ -159,7 +167,23 @@ function renderCrypto() {
     change.textContent = `${up ? "▲" : "▼"} ${Math.abs(pct).toFixed(2)}%`;
     change.title = `change over one ${CRYPTO_PERIODS.find(([k]) => k === period)[1]}`;
     head.append(sym, price, change);
-    row.append(head, sparkline(spark, up));
+    row.append(head);
+    // Fundamentals sub-row from the same /markets payload (m+; l adds the
+    // 24h range). Skip when the payload predates these fields.
+    if (widget.dataset.size !== "s" && coin.market_cap > 0) {
+      const sub = document.createElement("div");
+      sub.className = "coin-sub";
+      const bits = [
+        `MCAP ${fmtCompact(coin.market_cap)}`,
+        `VOL ${fmtCompact(coin.volume_24h)}`,
+      ];
+      if (widget.dataset.size === "l" && coin.high_24h > 0) {
+        bits.push(`24H ${fmtCompact(coin.low_24h)}–${fmtCompact(coin.high_24h)}`);
+      }
+      sub.textContent = bits.join(" · ");
+      row.append(sub);
+    }
+    row.append(sparkline(spark, up));
     body.append(row);
   }
 }
