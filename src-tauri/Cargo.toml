@@ -43,6 +43,7 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",          # foreground process name
     "Win32_System_Performance",        # PDH GPU counters
     "Media_Control",                   # SMTC now-playing (WinRT)
+    "Storage_Streams",                 # SMTC thumbnail stream (album art)
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

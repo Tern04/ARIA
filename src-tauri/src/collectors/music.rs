@@ -4,12 +4,25 @@ use tauri::{AppHandle, Emitter};
 
 const POLL: Duration = Duration::from_secs(10);
 
+#[derive(Serialize, Clone, Default)]
+struct NowPlaying {
+    title: String,
+    artist: String,
+    album: String,
+    /// Friendly source-app name ("Spotify", "Chrome"…), when identifiable.
+    app_name: Option<String>,
+    position_secs: u64,
+    duration_secs: u64,
+    /// Album art as a data: URL (Windows SMTC thumbnail; None elsewhere).
+    art: Option<String>,
+}
+
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum MusicState {
     Stopped,
-    Playing { title: String, artist: String },
-    Paused { title: String, artist: String },
+    Playing(NowPlaying),
+    Paused(NowPlaying),
 }
 
 /// Transport actions the widget buttons can request. Re-samples and emits the
@@ -176,9 +189,46 @@ fn sample_music() -> MusicState {
         if title.is_empty() {
             return Ok(MusicState::Stopped);
         }
+        // Sources update the timeline sporadically (browsers especially), so
+        // Position is stale by up to seconds; extrapolate from its own
+        // LastUpdatedTime while playing, or the widget's bar jumps backward.
+        let (position_secs, duration_secs) = session
+            .GetTimelineProperties()
+            .map(|t| {
+                let mut pos = t.Position().map(|p| p.Duration).unwrap_or(0);
+                let end = t.EndTime().map(|e| e.Duration).unwrap_or(0);
+                if status == Status::Playing {
+                    if let (Ok(updated), Ok(since_unix)) = (
+                        t.LastUpdatedTime(),
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH),
+                    ) {
+                        // UniversalTime: 100 ns ticks since 1601-01-01 UTC.
+                        const UNIX_EPOCH_1601: i64 = 116_444_736_000_000_000;
+                        let now = UNIX_EPOCH_1601 + (since_unix.as_nanos() / 100) as i64;
+                        pos += (now - updated.UniversalTime).max(0);
+                    }
+                }
+                if end > 0 {
+                    pos = pos.min(end);
+                }
+                ((pos / 10_000_000).max(0) as u64, (end / 10_000_000).max(0) as u64)
+            })
+            .unwrap_or((0, 0));
+        let now = NowPlaying {
+            album: props.AlbumTitle().map(|s| s.to_string()).unwrap_or_default(),
+            app_name: session
+                .SourceAppUserModelId()
+                .ok()
+                .and_then(|id| friendly_app_name(&id.to_string())),
+            position_secs,
+            duration_secs,
+            art: thumbnail_data_url(&props, &title, &artist),
+            title,
+            artist,
+        };
         Ok(match status {
-            Status::Playing => MusicState::Playing { title, artist },
-            Status::Paused => MusicState::Paused { title, artist },
+            Status::Playing => MusicState::Playing(now),
+            Status::Paused => MusicState::Paused(now),
             _ => MusicState::Stopped,
         })
     };
@@ -186,6 +236,93 @@ fn sample_music() -> MusicState {
         eprintln!("music smtc: {e}");
         MusicState::Stopped
     })
+}
+
+/// SMTC source ids are AUMIDs ("Spotify.exe", "MSEdge",
+/// "AppleInc.AppleMusicWin_…!App"); reduce the common ones to a label.
+#[cfg(target_os = "windows")]
+fn friendly_app_name(aumid: &str) -> Option<String> {
+    let id = aumid.to_lowercase();
+    let name = if id.contains("spotify") {
+        "Spotify"
+    } else if id.contains("applemusic") {
+        "Apple Music"
+    } else if id.contains("msedge") {
+        "Edge"
+    } else if id.contains("chrome") {
+        "Chrome"
+    } else if id.contains("firefox") {
+        "Firefox"
+    } else if id.contains("opera") {
+        "Opera"
+    } else if id.contains("vlc") {
+        "VLC"
+    } else if id.contains("zune") || id.contains("media") {
+        "Media Player"
+    } else {
+        return None;
+    };
+    Some(name.to_string())
+}
+
+/// Read the SMTC thumbnail into a data: URL. Encoded once per track — the
+/// poll runs every 10 s and the art is by far the heaviest field.
+#[cfg(target_os = "windows")]
+fn thumbnail_data_url(
+    props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties,
+    title: &str,
+    artist: &str,
+) -> Option<String> {
+    use std::sync::Mutex;
+    use windows::Storage::Streams::DataReader;
+
+    static CACHE: Mutex<Option<((String, String), Option<String>)>> = Mutex::new(None);
+    let key = (title.to_string(), artist.to_string());
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((k, art)) = cache.as_ref() {
+            if *k == key {
+                return art.clone();
+            }
+        }
+    }
+
+    let read = || -> windows::core::Result<Option<String>> {
+        let stream = props.Thumbnail()?.OpenReadAsync()?.join()?;
+        let size = stream.Size()?;
+        if size == 0 || size > 1_500_000 {
+            return Ok(None); // absent or unreasonably large
+        }
+        let reader = DataReader::CreateDataReader(&stream)?;
+        reader.LoadAsync(size as u32)?.join()?;
+        let mut bytes = vec![0u8; size as usize];
+        reader.ReadBytes(&mut bytes)?;
+        let mime = stream
+            .ContentType()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|_| "image/jpeg".into());
+        Ok(Some(format!("data:{mime};base64,{}", base64(&bytes))))
+    };
+    let art = read().unwrap_or(None);
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((key, art.clone()));
+    }
+    art
+}
+
+/// Plain base64 (RFC 4648) — small enough not to warrant a dependency.
+#[cfg(target_os = "windows")]
+fn base64(data: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
+        out.push(ABC[(n >> 18) as usize & 63] as char);
+        out.push(ABC[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { ABC[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { ABC[n as usize & 63] as char } else { '=' });
+    }
+    out
 }
 
 /// Linux (MPRIS) transport control lands with that machine.
@@ -236,7 +373,7 @@ fn sample_music() -> MusicState {
     const SCRIPT: &str = r#"tell application "Music"
     set pstate to (player state as text)
     if pstate is "playing" or pstate is "paused" then
-        return pstate & linefeed & (name of current track) & linefeed & (artist of current track)
+        return pstate & linefeed & (name of current track) & linefeed & (artist of current track) & linefeed & (album of current track) & linefeed & ((player position as integer) as text) & linefeed & ((duration of current track as integer) as text)
     else
         return "stopped"
     end if
@@ -264,14 +401,22 @@ end tell"#;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut lines = stdout.lines();
     match (lines.next(), lines.next(), lines.next()) {
-        (Some("playing"), Some(title), Some(artist)) if !title.is_empty() => MusicState::Playing {
-            title: title.to_string(),
-            artist: artist.to_string(),
-        },
-        (Some("paused"), Some(title), Some(artist)) if !title.is_empty() => MusicState::Paused {
-            title: title.to_string(),
-            artist: artist.to_string(),
-        },
+        (Some(state @ ("playing" | "paused")), Some(title), Some(artist)) if !title.is_empty() => {
+            let now = NowPlaying {
+                title: title.to_string(),
+                artist: artist.to_string(),
+                album: lines.next().unwrap_or("").to_string(),
+                app_name: Some("Music".into()),
+                position_secs: lines.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+                duration_secs: lines.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+                art: None,
+            };
+            if state == "playing" {
+                MusicState::Playing(now)
+            } else {
+                MusicState::Paused(now)
+            }
+        }
         _ => MusicState::Stopped,
     }
 }

@@ -737,25 +737,71 @@ function renderScreentime() {
 }
 
 let musicData = null;
+let musicSampledAt = 0; // wall clock of the last sample, for local advance
+
+function fmtClock(secs) {
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+// Advance the progress bar between polls using the wall clock; called by
+// renderMusic and a 1 s ticker so the bar moves without new samples.
+function updateMusicProgress() {
+  const p = musicData;
+  const wrap = document.getElementById("music-progress");
+  if (!p || wrap.hidden) return;
+  const dur = p.duration_secs;
+  const elapsed = p.status === "playing" ? (Date.now() - musicSampledAt) / 1000 : 0;
+  const pos = Math.min(p.position_secs + elapsed, dur);
+  document.getElementById("music-progress-fill").style.width =
+    dur > 0 ? `${(pos / dur) * 100}%` : "0%";
+  document.getElementById("music-progress-time").textContent =
+    dur > 0 ? `${fmtClock(pos)} / ${fmtClock(dur)}` : "";
+}
+
 function renderMusic() {
   if (!musicData) return;
   const p = musicData;
+  const size = document.getElementById("widget-music").dataset.size;
   const title = document.getElementById("music-title");
   const artist = document.getElementById("music-artist");
+  const album = document.getElementById("music-album");
+  const art = document.getElementById("music-art");
+  const progress = document.getElementById("music-progress");
   const controls = document.getElementById("music-controls");
   const playing = p.status === "playing";
   const active = playing || p.status === "paused";
   if (active) {
     title.textContent = p.title;
     artist.textContent = p.artist;
+    // Album line; the source app tags along at l ("Album — Spotify").
+    const albumText = [p.album, size === "l" ? p.app_name : null]
+      .filter(Boolean)
+      .join(" — ");
+    album.textContent = albumText;
+    album.hidden = !albumText;
+    if (p.art) {
+      art.src = p.art;
+      art.hidden = false;
+    } else {
+      art.hidden = true;
+      art.removeAttribute("src");
+    }
+    progress.hidden = !(p.duration_secs > 0);
     controls.classList.remove("music-controls--idle");
   } else {
     title.textContent = "Nothing playing";
     artist.textContent = "—";
+    album.hidden = true;
+    art.hidden = true;
+    art.removeAttribute("src");
+    progress.hidden = true;
     controls.classList.add("music-controls--idle");
   }
   // Play glyph when paused/stopped, pause glyph when playing.
   document.getElementById("music-playpause").classList.toggle("is-playing", playing);
+  updateMusicProgress();
 }
 
 async function initCollectors() {
@@ -818,6 +864,7 @@ async function initCollectors() {
 
   on("music", (e) => {
     musicData = e.payload;
+    musicSampledAt = Date.now();
     const active = musicData.status === "playing" || musicData.status === "paused";
     setStatus("status-music", active);
     renderMusic();
@@ -943,6 +990,7 @@ function renderStag() {
 }
 
 async function initMusicControls() {
+  setInterval(updateMusicProgress, 1000);
   const controls = document.getElementById("music-controls");
   controls.addEventListener("click", async (e) => {
     const btn = e.target.closest(".music-btn");

@@ -315,6 +315,84 @@ body.editing .win-resize {
   max-width: 120px;
 }
 
+/* ── MUSIC widget ───────────────────────────────────────────
+   Art + track info row, thin progress bar advanced locally between
+   polls. Structural only; colors come from the themes. */
+
+.music-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 0;
+}
+
+.music-art {
+  width: clamp(72px, 18%, 96px);
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.widget[data-size="l"] .music-art {
+  width: clamp(96px, 22%, 140px);
+}
+
+.music-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.track-album {
+  font: 400 0.74rem/1.3 "Inter", system-ui, sans-serif;
+  opacity: 0.55;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.music-progress-track {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(128, 128, 128, 0.3);
+  overflow: hidden;
+}
+
+.music-progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.75;
+  transition: width 0.5s linear;
+}
+
+.music-progress-time {
+  display: none;
+  flex-shrink: 0;
+  font: 500 0.66rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.6;
+}
+
+.widget[data-size="l"] .music-progress-time {
+  display: inline;
+}
+
+.widget[data-size="s"] .music-art,
+.widget[data-size="s"] .track-album,
+.widget[data-size="s"] .music-progress {
+  display: none;
+}
+
 /* ── STAG widget ────────────────────────────────────────────
    The timetable absorbs the free height (day rows stretch evenly);
    courses/exams clip below it. Structural only — colors in themes. */

@@ -156,8 +156,18 @@
         <section class="widget widget--music" id="widget-music">
           <h2 class="widget-label">NOW PLAYING</h2>
           <div class="widget-body">
-            <div class="track-title" id="music-title">--</div>
-            <div class="track-artist" id="music-artist">--</div>
+            <div class="music-main">
+              <img class="music-art" id="music-art" alt="" hidden />
+              <div class="music-info">
+                <div class="track-title" id="music-title">--</div>
+                <div class="track-artist" id="music-artist">--</div>
+                <div class="track-album" id="music-album" hidden></div>
+              </div>
+            </div>
+            <div class="music-progress" id="music-progress" hidden>
+              <div class="music-progress-track"><div class="music-progress-fill" id="music-progress-fill"></div></div>
+              <span class="music-progress-time" id="music-progress-time"></span>
+            </div>
             <div class="music-controls" id="music-controls">
               <button class="music-btn" data-action="previous" aria-label="Previous track">
                 <svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
