@@ -246,19 +246,40 @@ function renderDiscord() {
     return;
   }
 
-  // Voice channels arrive sorted by popularity; the widget size decides
-  // how many fit, but an occupied channel is always worth showing.
-  const maxChans = { s: 1, m: 3, l: 5 }[widget.dataset.size] ?? 3;
+  const size = widget.dataset.size;
+
+  // Small: a glanceable headline — how many people are in voice, where.
+  if (size === "s") {
+    const total = p.voice.reduce((n, c) => n + c.occupants.length, 0);
+    body.append(statRow(total, total === 1 ? "person in voice" : "in voice"));
+    const top = p.voice.find((c) => c.occupants.length > 0);
+    if (top) {
+      const chan = document.createElement("div");
+      chan.className = "dc-s-chan";
+      chan.textContent = top.name;
+      body.append(chan);
+    }
+    return;
+  }
+
+  // Voice channels arrive sorted by popularity; render them all and let
+  // the fill-list fade clip whatever doesn't fit the current size.
   const list = document.createElement("div");
-  list.className = "dc-voice";
-  for (const [i, chan] of p.voice.entries()) {
+  list.className = "dc-voice fill-list";
+  for (const chan of p.voice) {
     const live = chan.occupants.length > 0;
-    if (i >= maxChans && !live) continue;
     const row = document.createElement("div");
     row.className = live ? "dc-voice-row dc-voice-row--live" : "dc-voice-row";
     const name = document.createElement("span");
     name.className = "dc-chan-name";
     name.textContent = chan.name;
+    row.append(name);
+    if (live) {
+      const count = document.createElement("span");
+      count.className = "dc-count";
+      count.textContent = chan.occupants.length;
+      row.append(count);
+    }
     const occList = document.createElement("span");
     occList.className = "dc-occupants";
     if (!live) {
@@ -282,9 +303,24 @@ function renderDiscord() {
         liveTag.textContent = "LIVE";
         occ.append(liveTag);
       }
+      if (size === "l" && o.activity) {
+        const act = document.createElement("span");
+        act.className = "dc-activity";
+        act.textContent = o.activity;
+        occ.title = o.activity;
+        occ.append(act);
+      }
       occList.append(occ);
     }
-    row.append(name, occList);
+    row.append(occList);
+    // Large: faint person-hours tag from the popularity tally.
+    if (size === "l" && chan.score >= 60) {
+      const hrs = document.createElement("span");
+      hrs.className = "dc-chan-score";
+      hrs.textContent = `${Math.round(chan.score / 60)} h`;
+      hrs.title = "voice time tracked in this channel";
+      row.append(hrs);
+    }
     list.append(row);
   }
   body.append(list);
@@ -908,7 +944,7 @@ const GRID_ROWS = 6;
 const WIDGETS = {
   hardware:   { sizes: { s: [4, 1], m: [4, 2], l: [6, 2] }, home: [1, 1, "m"] },
   music:      { sizes: { s: [4, 1], m: [4, 2], l: [6, 3] }, home: [1, 3, "m"] },
-  discord:    { sizes: { s: [4, 1], m: [4, 2], l: [4, 3] }, home: [1, 5, "m"] },
+  discord:    { sizes: { s: [4, 1], m: [4, 2], l: [5, 3] }, home: [1, 5, "m"] },
   stag:       { sizes: { s: [5, 2], m: [5, 4], l: [8, 4] }, home: [5, 1, "m"] },
   email:      { sizes: { s: [5, 1], m: [5, 2], l: [5, 4] }, home: [5, 5, "m"] },
   github:     { sizes: { s: [3, 1], m: [3, 2], l: [5, 3] }, home: [10, 1, "m"] },

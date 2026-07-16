@@ -70,6 +70,8 @@ struct Occupant {
     mute: bool,
     deaf: bool,
     streaming: bool,
+    /// Current game / ♪ song from the presence map (large sizes show it).
+    activity: Option<String>,
 }
 
 #[derive(Serialize, Clone, PartialEq)]
@@ -487,6 +489,7 @@ fn build_state(g: &Guild, cfg: &DiscordConfig) -> DiscordState {
                     mute: v.mute,
                     deaf: v.deaf,
                     streaming: v.streaming,
+                    activity: g.presence.get(u).and_then(|p| p.activity.clone()),
                 })
                 .collect();
             occupants.sort_by(|a, b| a.name.cmp(&b.name));
