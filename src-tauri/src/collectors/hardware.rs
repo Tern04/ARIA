@@ -9,6 +9,11 @@ const POLL: Duration = Duration::from_secs(2);
 struct HardwareStats {
     cpu: f32,
     ram: f32,
+    ram_used_gb: f32,
+    ram_total_gb: f32,
+    net_rx_bps: u64,
+    net_tx_bps: u64,
+    uptime_secs: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -19,13 +24,26 @@ struct GpuStats {
 pub fn spawn(app: AppHandle) {
     spawn_gpu(app.clone());
     tauri::async_runtime::spawn(async move {
+        const GIB: f32 = 1_073_741_824.0;
         let mut sys = System::new();
+        let mut networks = sysinfo::Networks::new_with_refreshed_list();
         loop {
             sys.refresh_cpu_usage();
             sys.refresh_memory();
+            // received()/transmitted() are deltas since the last refresh,
+            // i.e. bytes per POLL interval.
+            networks.refresh(true);
+            let (rx, tx) = networks
+                .iter()
+                .fold((0u64, 0u64), |(r, t), (_, n)| (r + n.received(), t + n.transmitted()));
             let stats = HardwareStats {
                 cpu: sys.global_cpu_usage(),
                 ram: sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0,
+                ram_used_gb: sys.used_memory() as f32 / GIB,
+                ram_total_gb: sys.total_memory() as f32 / GIB,
+                net_rx_bps: rx / POLL.as_secs(),
+                net_tx_bps: tx / POLL.as_secs(),
+                uptime_secs: System::uptime(),
             };
             if let Err(e) = app.emit("hardware", stats) {
                 eprintln!("hardware emit failed: {e}");

@@ -50,6 +50,12 @@ function fmtDuration(secs) {
   return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+function fmtRate(bps) {
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} MB/s`;
+  if (bps >= 1e3) return `${Math.round(bps / 1e3)} kB/s`;
+  return `${bps} B/s`;
+}
+
 function fmtUsd(v) {
   return "$" + v.toLocaleString("en-US", {
     minimumFractionDigits: v < 100 ? 2 : 0,
@@ -810,8 +816,19 @@ async function initCollectors() {
   const on = (event, cb) => pending.push(listen(event, cb));
 
   on("hardware", (e) => {
-    setGauge("cpu", e.payload.cpu);
-    setGauge("ram", e.payload.ram);
+    const p = e.payload;
+    setGauge("cpu", p.cpu);
+    setGauge("ram", p.ram);
+    if (p.ram_total_gb > 0) {
+      document.getElementById("hw-ram").textContent =
+        `RAM ${p.ram_used_gb.toFixed(1)} / ${Math.round(p.ram_total_gb)} GB`;
+    }
+    document.getElementById("hw-net").textContent =
+      `↓ ${fmtRate(p.net_rx_bps)} ↑ ${fmtRate(p.net_tx_bps)}`;
+    const days = Math.floor(p.uptime_secs / 86400);
+    document.getElementById("hw-up").textContent = days > 0
+      ? `UP ${days}d ${Math.floor((p.uptime_secs % 86400) / 3600)}h`
+      : `UP ${fmtDuration(p.uptime_secs)}`;
   });
 
   on("gpu", (e) => {

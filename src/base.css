@@ -311,8 +311,26 @@ body.editing .win-resize {
   max-width: 304px;
 }
 
-.widget[data-size="l"] .gauge-canvas {
-  max-width: 120px;
+/* metrics strip under the gauges (RAM GB · net rates · uptime) */
+.hw-strip {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid rgba(128, 128, 128, 0.25);
+  font: 500 0.7rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.75;
+}
+
+.hw-cell {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget[data-size="s"] .hw-strip {
+  display: none;
 }
 
 /* ── MUSIC widget ───────────────────────────────────────────

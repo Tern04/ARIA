@@ -103,6 +103,7 @@
       <div class="hud-grid">
         <section class="widget widget--hardware" id="widget-hardware">
           <h2 class="widget-label">SYSTEM</h2>
+          <div class="widget-body">
           <div class="gauge-row">
             <div class="gauge">
               <canvas class="gauge-canvas" id="gauge-cpu" width="240" height="240"></canvas>
@@ -119,6 +120,12 @@
               <div class="gauge-value"><span id="gpu-val">--</span><span class="unit">%</span></div>
               <div class="gauge-name">GPU</div>
             </div>
+          </div>
+          <div class="hw-strip">
+            <span class="hw-cell" id="hw-ram">--</span>
+            <span class="hw-cell" id="hw-net">--</span>
+            <span class="hw-cell" id="hw-up">--</span>
+          </div>
           </div>
         </section>
 

@@ -210,15 +210,15 @@ body.interactive .widget {
   align-items: center;
   gap: 4px;
   position: relative;
-  flex: 0 1 100px;
+  flex: 0 1 clamp(90px, 26%, 170px);
   min-width: 0;
 }
 
-/* Canvas raster stays 100×100; CSS scales it down on tight layouts. */
+/* Canvas raster is 240×240; CSS scales it to the gauge's fluid width. */
 .gauge-canvas {
   display: block;
   width: 100%;
-  max-width: 100px;
+  max-width: 170px;
   height: auto;
 }
 
