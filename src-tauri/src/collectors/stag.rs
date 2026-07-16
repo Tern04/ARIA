@@ -29,7 +29,17 @@ enum StagState {
         total_credits: u64,
         timetable: Timetable,
         courses: Vec<Course>,
+        exams: Vec<Exam>,
     },
+}
+
+/// Upcoming exam date, split off the schedule feed (never in the weekly grid).
+#[derive(Serialize, Clone)]
+struct Exam {
+    subject: String,
+    date: String, // display form, e.g. "15.6."
+    time: String,
+    room: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -115,7 +125,7 @@ async fn poll(client: &reqwest::Client) -> Result<StagState, String> {
         get(client, &ticket, &subjects_url),
     );
 
-    let timetable = parse_timetable(&schedule?);
+    let (timetable, exams) = parse_timetable(&schedule?, today);
     let courses = parse_courses(&subjects.unwrap_or_default());
     let total_credits = courses.iter().map(|c| c.credits).sum();
 
@@ -137,22 +147,31 @@ async fn poll(client: &reqwest::Client) -> Result<StagState, String> {
         total_credits,
         timetable,
         courses,
+        exams,
     })
 }
 
-/// Build the recurring weekly grid from the whole teaching semester: regular
+/// Build the recurring weekly grid from the whole semester window: regular
 /// classes recur every week, so dedupe by day+period+subject+type. Exams
-/// (typAkce "Zkouška") are dropped — they are not part of the weekly rhythm.
-fn parse_timetable(body: &serde_json::Value) -> Timetable {
+/// (typAkce "Zkouška") are not part of the weekly rhythm — they are split
+/// into their own upcoming list (deduped, future-only, soonest first).
+fn parse_timetable(body: &serde_json::Value, today: NaiveDate) -> (Timetable, Vec<Exam>) {
     let mut classes: Vec<ClassEntry> = Vec::new();
     let mut seen: BTreeSet<(u8, u8, String, String)> = BTreeSet::new();
     let mut periods_used: BTreeSet<u8> = BTreeSet::new();
+    let mut exams: Vec<(NaiveDate, Exam)> = Vec::new();
+    let mut exam_seen: BTreeSet<(String, NaiveDate)> = BTreeSet::new();
 
     if let Some(akce) = body["rozvrhovaAkce"].as_array() {
         for a in akce {
             let typ = text(a, &["typAkce"]).unwrap_or("");
             if typ.to_lowercase().contains("zkou") {
-                continue; // skip exams
+                if let Some((date, exam)) = parse_exam(a) {
+                    if date >= today && exam_seen.insert((exam.subject.clone(), date)) {
+                        exams.push((date, exam));
+                    }
+                }
+                continue;
             }
             let Some(entry) = parse_class(a) else {
                 continue;
@@ -184,12 +203,43 @@ fn parse_timetable(body: &serde_json::Value) -> Timetable {
         })
         .collect();
 
-    Timetable {
-        min_period,
-        max_period,
-        periods,
-        classes,
-    }
+    exams.sort_by_key(|(date, _)| *date);
+    let exams = exams.into_iter().map(|(_, e)| e).take(6).collect();
+
+    (
+        Timetable {
+            min_period,
+            max_period,
+            periods,
+            classes,
+        },
+        exams,
+    )
+}
+
+/// One exam sitting: needs a parseable date; time/room may be blank.
+fn parse_exam(akce: &serde_json::Value) -> Option<(NaiveDate, Exam)> {
+    let raw = text(akce, &["datum"])?;
+    let date = NaiveDate::parse_from_str(raw.trim(), "%d.%m.%Y").ok()?;
+    let subject = match (text(akce, &["katedra"]), text(akce, &["predmet", "zkratka"])) {
+        (Some(dept), Some(code)) => format!("{dept}/{code}"),
+        (None, Some(code)) => code.to_string(),
+        _ => text(akce, &["nazev"]).unwrap_or("?").to_string(),
+    };
+    let room = match (text(akce, &["budova"]), text(akce, &["mistnost"])) {
+        (Some(b), Some(m)) => format!("{b}-{m}"),
+        (None, Some(m)) => m.to_string(),
+        _ => String::new(),
+    };
+    Some((
+        date,
+        Exam {
+            subject,
+            date: date.format("%-d.%-m.").to_string(),
+            time: text(akce, &["hodinaSkutOd", "casOd"]).unwrap_or("").to_string(),
+            room,
+        },
+    ))
 }
 
 fn parse_class(akce: &serde_json::Value) -> Option<ClassEntry> {
@@ -260,13 +310,15 @@ fn day_short(day: u8) -> &'static str {
     ["Po", "Út", "St", "Čt", "Pá"].get(day as usize).unwrap_or(&"?")
 }
 
-/// Teaching weeks (excludes the exam period): LS runs late Feb–mid May of the
-/// calendar year after the academic year starts; ZS runs late Sep–mid Dec.
+/// Whole semester including the exam period, so exam sittings arrive with the
+/// schedule: LS mid Feb–end of June the calendar year after the academic year
+/// starts; ZS late Sep–mid Feb. The weekly grid is unaffected by the wider
+/// window (exams are split out; recurring classes dedupe).
 fn teaching_range(ay_start: i32, term: &str) -> (NaiveDate, NaiveDate) {
     let ymd = |y, m, d| NaiveDate::from_ymd_opt(y, m, d).unwrap();
     match term {
-        "LS" => (ymd(ay_start + 1, 2, 15), ymd(ay_start + 1, 5, 20)),
-        _ => (ymd(ay_start, 9, 20), ymd(ay_start, 12, 20)),
+        "LS" => (ymd(ay_start + 1, 2, 15), ymd(ay_start + 1, 6, 30)),
+        _ => (ymd(ay_start, 9, 20), ymd(ay_start + 1, 2, 15)),
     }
 }
 

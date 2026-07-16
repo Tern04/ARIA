@@ -621,6 +621,30 @@ function renderEmail() {
 // Kind abbreviation → CSS modifier for colouring lecture vs seminar.
 const CLASS_KIND = { "Př": "lecture", "Cv": "seminar", "Se": "seminar" };
 
+// Monday-based weekday index of today (0 = Po … 6 = Ne).
+function todayIndex() {
+  return (new Date().getDay() + 6) % 7;
+}
+
+// Compact chips of today's classes — the s-size headline.
+function buildTodayStrip(tt) {
+  const wrap = document.createElement("div");
+  wrap.className = "stag-today";
+  const items = tt.classes.filter((c) => c.day === todayIndex());
+  if (items.length === 0) {
+    wrap.classList.add("stag-today--free");
+    wrap.textContent = "no classes today";
+    return wrap;
+  }
+  for (const c of items) {
+    const chip = document.createElement("span");
+    chip.className = `stag-today-chip tt-class--${CLASS_KIND[c.kind] ?? "other"}`;
+    chip.textContent = `${c.subject} · ${c.kind} · ${c.time} · ${c.room}`;
+    wrap.append(chip);
+  }
+  return wrap;
+}
+
 function buildTimetable(tt) {
   const grid = document.createElement("div");
   grid.className = "tt-grid";
@@ -649,7 +673,7 @@ function buildTimetable(tt) {
   const dayNames = ["Po", "Út", "St", "Čt", "Pá"];
   for (let d = 0; d < 5; d++) {
     const label = document.createElement("div");
-    label.className = "tt-day";
+    label.className = d === todayIndex() ? "tt-day tt-day--today" : "tt-day";
     label.style.gridRow = d + 2;
     label.textContent = dayNames[d];
     grid.append(label);
@@ -826,14 +850,21 @@ function renderStag() {
     header.append(program, meta);
     body.append(header);
 
+    const size = document.getElementById("widget-stag").dataset.size;
+
+    // Small: just the header and what's on today.
+    if (size === "s") {
+      body.append(buildTodayStrip(p.timetable));
+      return;
+    }
+
     body.append(buildTimetable(p.timetable));
 
     const coursesLabel = document.createElement("div");
     coursesLabel.className = "stag-section";
     coursesLabel.textContent = "COURSES";
-    body.append(coursesLabel);
     const courseList = document.createElement("div");
-    courseList.className = "course-list";
+    courseList.className = "course-list fill-list";
     for (const c of p.courses) {
       const row = document.createElement("div");
       row.className = "course-row";
@@ -853,7 +884,42 @@ function renderStag() {
       row.append(cr, code, name, tag);
       courseList.append(row);
     }
-    body.append(courseList);
+
+    // Large: two-column bottom — courses left, upcoming exams right.
+    if (size === "l" && p.exams?.length) {
+      const bottom = document.createElement("div");
+      bottom.className = "stag-bottom";
+      const coursesCol = document.createElement("div");
+      coursesCol.className = "stag-col";
+      coursesCol.append(coursesLabel, courseList);
+      const examsCol = document.createElement("div");
+      examsCol.className = "stag-col";
+      const examsLabel = document.createElement("div");
+      examsLabel.className = "stag-section";
+      examsLabel.textContent = "EXAMS";
+      const examList = document.createElement("div");
+      examList.className = "exam-list fill-list";
+      for (const ex of p.exams) {
+        const row = document.createElement("div");
+        row.className = "exam-row";
+        const date = document.createElement("span");
+        date.className = "exam-date";
+        date.textContent = ex.time ? `${ex.date} ${ex.time}` : ex.date;
+        const subj = document.createElement("span");
+        subj.className = "exam-subj";
+        subj.textContent = ex.subject;
+        const room = document.createElement("span");
+        room.className = "exam-room";
+        room.textContent = ex.room;
+        row.append(date, subj, room);
+        examList.append(row);
+      }
+      examsCol.append(examsLabel, examList);
+      bottom.append(coursesCol, examsCol);
+      body.append(bottom);
+    } else {
+      body.append(coursesLabel, courseList);
+    }
   } else {
     const span = document.createElement("span");
     span.className = "disconnected";

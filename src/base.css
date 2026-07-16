@@ -161,6 +161,9 @@ body.editing .win-resize {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+  /* the padding is the fade zone: when content fits, the fade covers
+     empty space; when it overflows, the cut row fades out instead */
+  padding-bottom: 16px;
   -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
   mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
 }
@@ -310,6 +313,99 @@ body.editing .win-resize {
 
 .widget[data-size="l"] .gauge-canvas {
   max-width: 120px;
+}
+
+/* ── STAG widget ────────────────────────────────────────────
+   The timetable absorbs the free height (day rows stretch evenly);
+   courses/exams clip below it. Structural only — colors in themes. */
+
+.tt-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-rows: auto repeat(5, minmax(0, 1fr));
+}
+
+.tt-class {
+  min-height: 0;
+}
+
+.tt-day--today {
+  font-weight: 800;
+  opacity: 1;
+  text-decoration: underline 1px;
+  text-underline-offset: 3px;
+}
+
+/* small size: today's classes as compact chips under the header */
+.stag-today {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+}
+
+.stag-today-chip {
+  font: 500 0.7rem/1.5 "JetBrains Mono", ui-monospace, monospace;
+  padding: 3px 9px;
+  border-radius: 6px;
+}
+
+.stag-today--free {
+  opacity: 0.5;
+  font: 400 0.78rem/1.4 "Inter", system-ui, sans-serif;
+}
+
+/* large size: courses | upcoming exams side by side */
+.stag-bottom {
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 0 18px;
+  min-height: 0;
+}
+
+.stag-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+/* the timetable owns the free height; lists below it stay natural
+   (fill-list still provides the overflow fade when space is tight) */
+.widget--stag .course-list.fill-list,
+.widget--stag .exam-list.fill-list {
+  flex: 0 1 auto;
+}
+
+.exam-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.exam-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 400 0.74rem/1.4 "Inter", system-ui, sans-serif;
+}
+
+.exam-date {
+  flex-shrink: 0;
+  font: 600 0.7rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+}
+
+.exam-subj {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exam-room {
+  margin-left: auto;
+  flex-shrink: 0;
+  font: 500 0.68rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.6;
 }
 
 /* ── DISCORD widget ─────────────────────────────────────────
