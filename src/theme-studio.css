@@ -266,12 +266,6 @@ body.interactive .mod-hint {
   transform: translateY(-2px);
 }
 
-/* center bare empty/placeholder states */
-.widget-body:has(> .disconnected:only-child) {
-  align-items: center;
-  justify-content: center;
-}
-
 .widget--hardware   { animation-delay: 0.04s; }
 .widget--stag       { animation-delay: 0.09s; }
 .widget--github     { animation-delay: 0.14s; }

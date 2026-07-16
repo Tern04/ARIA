@@ -148,6 +148,29 @@ body.editing .win-resize {
   z-index: 100;
 }
 
+/* ── shared fill/density primitives ─────────────────────────
+   Sparse content breathes through gaps (not font scaling); long
+   lists absorb leftover height and fade-clip at the bottom so
+   any item count looks intentional at any window size. */
+
+:root {
+  --fill-gap: clamp(6px, 1.4vh, 16px);
+}
+
+.fill-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+}
+
+/* center bare empty/placeholder states (all themes) */
+.widget-body:has(> .disconnected:only-child) {
+  align-items: center;
+  justify-content: center;
+}
+
 /* ── customizable widget board ──────────────────────────────
    Shared across themes: a 12×6 cell grid; main.js assigns each
    widget a grid-area from its saved position + size preset. */

@@ -653,6 +653,51 @@ function setStatus(id, online) {
   document.getElementById(id).classList.toggle("online", online);
 }
 
+let screentimeData = null;
+function renderScreentime() {
+  if (!screentimeData) return;
+  const body = document.querySelector("#widget-screentime .widget-body");
+  body.replaceChildren();
+  const total = document.createElement("div");
+  total.className = "st-total";
+  total.textContent = fmtDuration(screentimeData.total);
+  body.append(total);
+  for (const app of screentimeData.apps) {
+    const row = document.createElement("div");
+    row.className = "st-row";
+    const name = document.createElement("span");
+    name.className = "st-name";
+    name.textContent = app.name;
+    const time = document.createElement("span");
+    time.className = "st-time";
+    time.textContent = fmtDuration(app.secs);
+    row.append(name, time);
+    body.append(row);
+  }
+}
+
+let musicData = null;
+function renderMusic() {
+  if (!musicData) return;
+  const p = musicData;
+  const title = document.getElementById("music-title");
+  const artist = document.getElementById("music-artist");
+  const controls = document.getElementById("music-controls");
+  const playing = p.status === "playing";
+  const active = playing || p.status === "paused";
+  if (active) {
+    title.textContent = p.title;
+    artist.textContent = p.artist;
+    controls.classList.remove("music-controls--idle");
+  } else {
+    title.textContent = "Nothing playing";
+    artist.textContent = "—";
+    controls.classList.add("music-controls--idle");
+  }
+  // Play glyph when paused/stopped, pause glyph when playing.
+  document.getElementById("music-playpause").classList.toggle("is-playing", playing);
+}
+
 async function initCollectors() {
   const { listen } = window.__TAURI__.event;
   const pending = [];
@@ -707,46 +752,15 @@ async function initCollectors() {
   });
 
   on("screentime", (e) => {
-    const body = document.querySelector("#widget-screentime .widget-body");
-    const p = e.payload;
-    body.replaceChildren();
-    const total = document.createElement("div");
-    total.className = "st-total";
-    total.textContent = fmtDuration(p.total);
-    body.append(total);
-    for (const app of p.apps) {
-      const row = document.createElement("div");
-      row.className = "st-row";
-      const name = document.createElement("span");
-      name.className = "st-name";
-      name.textContent = app.name;
-      const time = document.createElement("span");
-      time.className = "st-time";
-      time.textContent = fmtDuration(app.secs);
-      row.append(name, time);
-      body.append(row);
-    }
+    screentimeData = e.payload;
+    renderScreentime();
   });
 
   on("music", (e) => {
-    const p = e.payload;
-    const title = document.getElementById("music-title");
-    const artist = document.getElementById("music-artist");
-    const controls = document.getElementById("music-controls");
-    const playing = p.status === "playing";
-    const active = playing || p.status === "paused";
+    musicData = e.payload;
+    const active = musicData.status === "playing" || musicData.status === "paused";
     setStatus("status-music", active);
-    if (active) {
-      title.textContent = p.title;
-      artist.textContent = p.artist;
-      controls.classList.remove("music-controls--idle");
-    } else {
-      title.textContent = "Nothing playing";
-      artist.textContent = "—";
-      controls.classList.add("music-controls--idle");
-    }
-    // Play glyph when paused/stopped, pause glyph when playing.
-    document.getElementById("music-playpause").classList.toggle("is-playing", playing);
+    renderMusic();
   });
 
   on("stag", (e) => {
@@ -903,6 +917,7 @@ const WIDGETS = {
 };
 
 let layout = loadLayout();
+normalizeLayout();
 
 function defaultLayout() {
   const l = {};
@@ -929,6 +944,38 @@ function saveLayout() {
   try {
     localStorage.setItem("aria-layout", JSON.stringify(layout));
   } catch {}
+}
+
+// Saved rects go stale when a widget's size presets change between
+// versions: clamp each one back into the grid, relocate on collision,
+// fall back to a smaller size, and hide (tray-recoverable) as a last
+// resort — so applyLayout never renders an overlapping board.
+function normalizeLayout() {
+  let changed = false;
+  for (const id of Object.keys(WIDGETS)) {
+    const p = layout[id];
+    if (p.hidden) continue;
+    let placed = false;
+    for (const size of [...new Set([p.size, "m", "s"])]) {
+      const dims = WIDGETS[id].sizes[size];
+      if (!dims) continue;
+      const [w, h] = dims;
+      const c = Math.min(Math.max(p.c, 1), GRID_COLS - w + 1);
+      const r = Math.min(Math.max(p.r, 1), GRID_ROWS - h + 1);
+      const spot = fits({ c, r, w, h }, id) ? [c, r] : findFreeSpot(w, h, id);
+      if (spot) {
+        changed ||= spot[0] !== p.c || spot[1] !== p.r || size !== p.size;
+        Object.assign(p, { size, c: spot[0], r: spot[1] });
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      p.hidden = true;
+      changed = true;
+    }
+  }
+  if (changed) saveLayout();
 }
 
 function widgetEl(id) {
@@ -984,9 +1031,14 @@ function applyLayout() {
       if (btn) btn.textContent = p.size.toUpperCase();
     }
   }
-  // Crypto and discord content depends on the widget's size.
+  // Widget content ladders on the widget's size — re-render everything.
   renderCrypto();
   renderDiscord();
+  renderGithub();
+  renderEmail();
+  renderStag();
+  renderScreentime();
+  renderMusic();
 }
 
 function showWidget(id) {
