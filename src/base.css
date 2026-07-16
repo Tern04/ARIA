@@ -71,6 +71,77 @@
   font-size: 0.75rem;
 }
 
+/* ── display menu (monitor picker + fill toggle) ────────────
+   Reuses .theme-menu chrome; monitors have no color swatch. */
+
+.display-picker .theme-menu button::before {
+  display: none;
+}
+
+#display-monitors {
+  display: flex;
+  flex-direction: column;
+}
+
+#fill-toggle {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0 0 7px 7px;
+}
+
+/* ── window move/resize grips, visible only in edit mode ────
+   Like widget editing, they need the window interactive (Alt). */
+
+.win-move,
+.win-resize {
+  position: fixed;
+  display: none;
+  z-index: 200;
+}
+
+body.editing .win-move,
+body.editing .win-resize {
+  display: flex;
+}
+
+.win-move {
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  background: rgba(18, 20, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  font: 600 0.72rem/1 "Inter", system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #c9ccd3;
+  cursor: grab;
+  user-select: none;
+}
+
+.win-move:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.win-resize {
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent 0 4px,
+    rgba(255, 255, 255, 0.35) 4px 6px
+  );
+  border-radius: 0 0 6px 0;
+}
+
 /* header (with the picker dropdown) sits above the widget grid */
 .hud > .hud-header {
   position: relative;

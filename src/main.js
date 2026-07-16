@@ -1176,7 +1176,204 @@ function initThemePicker() {
   applyTheme(saved);
 }
 
+/* ── window placement: monitor picker, fill screen, move/resize ──
+   Geometry persists in physical pixels (per-monitor-DPI safe) under
+   "aria-window": { x, y, w, h, fill, preFill: {w, h} }. */
+
+function loadWinState() {
+  try {
+    return JSON.parse(localStorage.getItem("aria-window")) || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveWinState(patch) {
+  const s = { ...(loadWinState() || {}), ...patch };
+  try {
+    localStorage.setItem("aria-window", JSON.stringify(s));
+  } catch {}
+  return s;
+}
+
+// Work area excludes the taskbar/Dock; older API bundles lack it.
+function workArea(m) {
+  return m.workArea || { position: m.position, size: m.size };
+}
+
+async function placeCentered(m, w, h) {
+  const W = window.__TAURI__.window;
+  const wa = workArea(m);
+  const cw = Math.min(w, wa.size.width);
+  const ch = Math.min(h, wa.size.height);
+  const win = W.getCurrentWindow();
+  await win.setSize(new W.PhysicalSize(cw, ch));
+  await win.setPosition(
+    new W.PhysicalPosition(
+      Math.round(wa.position.x + (wa.size.width - cw) / 2),
+      Math.round(wa.position.y + (wa.size.height - ch) / 2),
+    ),
+  );
+}
+
+async function fillMonitor(m) {
+  const W = window.__TAURI__.window;
+  const wa = workArea(m);
+  const win = W.getCurrentWindow();
+  await win.setPosition(new W.PhysicalPosition(wa.position.x, wa.position.y));
+  await win.setSize(new W.PhysicalSize(wa.size.width, wa.size.height));
+}
+
+async function restoreWindowState() {
+  const s = loadWinState();
+  if (!s) return; // first run: keep tauri.conf defaults
+  const W = window.__TAURI__.window;
+  try {
+    const monitors = await W.availableMonitors();
+    const cx = s.x + s.w / 2;
+    const cy = s.y + s.h / 2;
+    const target = monitors.find((m) => {
+      const { position: p, size: z } = m;
+      return cx >= p.x && cx < p.x + z.width && cy >= p.y && cy < p.y + z.height;
+    });
+    if (!target) {
+      // Saved monitor is gone; land on the primary instead.
+      const primary = await W.primaryMonitor();
+      if (primary) {
+        saveWinState({ fill: false });
+        await placeCentered(primary, s.w, s.h);
+      }
+      return;
+    }
+    if (s.fill) {
+      await fillMonitor(target);
+    } else {
+      const win = W.getCurrentWindow();
+      await win.setPosition(new W.PhysicalPosition(s.x, s.y));
+      await win.setSize(new W.PhysicalSize(s.w, s.h));
+    }
+  } catch (e) {
+    console.error("window restore failed:", e);
+  }
+}
+
+function initDisplayMenu() {
+  const W = window.__TAURI__.window;
+  const btn = document.getElementById("display-btn");
+  const menu = document.getElementById("display-menu");
+  const list = document.getElementById("display-monitors");
+  const fillBtn = document.getElementById("fill-toggle");
+
+  async function moveTo(m) {
+    if ((loadWinState() || {}).fill) {
+      await fillMonitor(m);
+      return;
+    }
+    // Keep the visual (logical) size when the target DPI differs.
+    const win = W.getCurrentWindow();
+    const size = await win.innerSize();
+    const scale = await win.scaleFactor();
+    await placeCentered(
+      m,
+      Math.round((size.width / scale) * m.scaleFactor),
+      Math.round((size.height / scale) * m.scaleFactor),
+    );
+  }
+
+  async function toggleFill() {
+    const win = W.getCurrentWindow();
+    const m = (await W.currentMonitor()) || (await W.primaryMonitor());
+    if (!m) return;
+    const s = loadWinState() || {};
+    if (s.fill) {
+      const scale = m.scaleFactor || 1;
+      const pre = s.preFill || {
+        w: Math.round(1280 * scale),
+        h: Math.round(800 * scale),
+      };
+      saveWinState({ fill: false });
+      await placeCentered(m, pre.w, pre.h);
+    } else {
+      const size = await win.innerSize();
+      saveWinState({ fill: true, preFill: { w: size.width, h: size.height } });
+      await fillMonitor(m);
+    }
+  }
+
+  async function rebuild() {
+    const [monitors, current] = await Promise.all([
+      W.availableMonitors(),
+      W.currentMonitor(),
+    ]);
+    list.replaceChildren();
+    monitors.forEach((m, i) => {
+      const b = document.createElement("button");
+      b.textContent = `Display ${i + 1} — ${m.size.width}×${m.size.height}`;
+      if (current && m.name === current.name) b.classList.add("active");
+      b.addEventListener("click", () => moveTo(m));
+      list.append(b);
+    });
+    fillBtn.classList.toggle("active", !!(loadWinState() || {}).fill);
+  }
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (menu.hidden) rebuild();
+    menu.hidden = !menu.hidden;
+  });
+  fillBtn.addEventListener("click", toggleFill);
+  document.addEventListener("click", () => {
+    menu.hidden = true;
+  });
+}
+
+function initWindowHandles() {
+  const win = window.__TAURI__.window.getCurrentWindow();
+  document.getElementById("win-move").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    win.startDragging();
+  });
+  document.getElementById("win-resize").addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    win.startResizeDragging("SouthEast");
+  });
+}
+
+// The OS owns move/resize drags (no completion callback), so geometry is
+// captured from the window's own events, debounced.
+function initWindowStateSaver() {
+  const W = window.__TAURI__.window;
+  const win = W.getCurrentWindow();
+  let t = null;
+  const queue = () => {
+    clearTimeout(t);
+    t = setTimeout(async () => {
+      try {
+        const pos = await win.outerPosition();
+        const size = await win.innerSize();
+        const patch = { x: pos.x, y: pos.y, w: size.width, h: size.height };
+        const s = loadWinState() || {};
+        if (s.fill) {
+          // A size that no longer matches the work area means the user
+          // resized manually and broke fill.
+          const m = await W.currentMonitor();
+          if (m) {
+            const wa = workArea(m);
+            if (size.width !== wa.size.width || size.height !== wa.size.height) {
+              patch.fill = false;
+            }
+          }
+        }
+        saveWinState(patch);
+      } catch {}
+    }, 500);
+  };
+  win.onMoved(queue);
+  win.onResized(queue);
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
+  restoreWindowState(); // async, fire-and-forget: reposition ASAP
   updateClock();
   setInterval(updateClock, 1000);
   // The interactivity gate is ⌥ on macOS, Alt elsewhere.
@@ -1184,6 +1381,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("mod-hint").textContent = "alt interact";
   }
   initThemePicker();
+  initDisplayMenu();
+  initWindowHandles();
+  initWindowStateSaver();
   initLayout();
   initGauges();
   initPinToggle();

@@ -42,6 +42,18 @@
               <button data-theme="porcelain">Porcelain</button>
             </div>
           </div>
+          <div class="theme-picker display-picker">
+            <button class="pin-toggle" id="display-btn" aria-label="Display options" title="Display options">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="2" y="3" width="20" height="14" rx="2" />
+                <path d="M8 21h8M12 17v4" />
+              </svg>
+            </button>
+            <div class="theme-menu" id="display-menu" hidden>
+              <div id="display-monitors"></div>
+              <button id="fill-toggle">Fill screen</button>
+            </div>
+          </div>
           <button class="pin-toggle" id="edit-toggle" aria-label="Edit layout" title="Edit layout">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />
@@ -183,5 +195,7 @@
         <button class="tray-reset" id="tray-reset">RESET LAYOUT</button>
       </div>
     </div>
+    <div class="win-move" id="win-move" title="Move window (hold Alt and drag)">✥ move</div>
+    <div class="win-resize" id="win-resize" title="Resize window (hold Alt and drag)"></div>
   </body>
 </html>
