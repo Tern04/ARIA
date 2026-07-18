@@ -311,6 +311,7 @@ body.editing .win-resize {
    Rows breathe apart on tall sizes and fade-clip on short ones. */
 
 .widget--email .mail-list {
+  justify-content: space-evenly; /* few messages spread over the body */
   gap: clamp(7px, 1.4vh, 14px);
 }
 

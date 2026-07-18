@@ -4,8 +4,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const POLL: Duration = Duration::from_secs(300);
 // Enough rows to fill the large widget size; smaller sizes clip the rest.
-const RECENT_PER_ACCOUNT: u32 = 8;
-const RECENT_SHOWN: usize = 8;
+const RECENT_PER_ACCOUNT: u32 = 12;
+const RECENT_SHOWN: usize = 12;
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -28,7 +28,7 @@ struct MailMessage {
     from: String,
     subject: String,
     unseen: bool,
-    #[serde(skip)]
+    /// Unix seconds; the widget renders a relative day/time at l.
     timestamp: i64,
 }
 
