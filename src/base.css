@@ -193,7 +193,8 @@ body.editing .win-resize {
 .widget[data-size="s"] .gh-total,
 .widget[data-size="s"] .mail-list,
 .widget[data-size="s"] .playlist-list,
-.widget[data-size="s"] .st-row,
+.widget[data-size="s"] .st-list,
+.widget[data-size="s"] .st-delta,
 .widget[data-size="s"] .track-artist,
 .widget[data-size="s"] .tt-grid,
 .widget[data-size="s"] .stag-section,
@@ -304,6 +305,47 @@ body.editing .win-resize {
    the rest scale their signature element up. */
 .widget[data-size="l"] .gh-wall {
   max-height: 160px;
+}
+
+/* ── MAIL widget ────────────────────────────────────────────
+   Rows breathe apart on tall sizes and fade-clip on short ones. */
+
+.widget--email .mail-list {
+  gap: clamp(7px, 1.4vh, 14px);
+}
+
+/* ── SCREEN TIME widget ─────────────────────────────────────
+   App rows with a per-app share bar (relative to the top app). */
+
+.st-list {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly; /* few apps spread over the body */
+  gap: var(--fill-gap);
+}
+
+.st-app {
+  min-width: 0;
+}
+
+.st-bar {
+  height: 2px;
+  margin-top: 3px;
+  border-radius: 1px;
+  background: rgba(128, 128, 128, 0.18);
+  overflow: hidden;
+}
+
+.st-bar-fill {
+  height: 100%;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.4;
+}
+
+.st-delta {
+  font: 400 0.72rem/1.4 "Inter", system-ui, sans-serif;
+  opacity: 0.55;
 }
 
 /* ── GITHUB widget ──────────────────────────────────────────

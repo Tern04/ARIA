@@ -14,6 +14,8 @@ const TOP_APPS: usize = 8;
 struct ScreenTime {
     total: u64,
     apps: Vec<AppTime>,
+    /// Total from the previous day's saved file, for the trend line.
+    yesterday_total: Option<u64>,
 }
 
 #[derive(Serialize, Clone)]
@@ -27,6 +29,7 @@ pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut day = today();
         let mut usage = load_day(&app, &day).unwrap_or_default();
+        let mut yesterday_total = load_total(&app, &yesterday());
         let mut tick = 0u32;
         loop {
             tokio::time::sleep(TICK).await;
@@ -37,6 +40,7 @@ pub fn spawn(app: AppHandle) {
                 save_day(&app, &day, &usage);
                 day = now;
                 usage = HashMap::new();
+                yesterday_total = load_total(&app, &yesterday());
             }
 
             if idle_seconds() < IDLE_LIMIT {
@@ -46,7 +50,7 @@ pub fn spawn(app: AppHandle) {
             }
 
             if tick % 3 == 0 {
-                if let Err(e) = app.emit("screentime", summarize(&usage)) {
+                if let Err(e) = app.emit("screentime", summarize(&usage, yesterday_total)) {
                     eprintln!("screentime emit failed: {e}");
                 }
             }
@@ -61,7 +65,7 @@ pub fn spawn(app: AppHandle) {
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn spawn(_app: AppHandle) {}
 
-fn summarize(usage: &HashMap<String, u64>) -> ScreenTime {
+fn summarize(usage: &HashMap<String, u64>, yesterday_total: Option<u64>) -> ScreenTime {
     let total = usage.values().sum();
     let mut apps: Vec<AppTime> = usage
         .iter()
@@ -72,11 +76,27 @@ fn summarize(usage: &HashMap<String, u64>) -> ScreenTime {
         .collect();
     apps.sort_by(|a, b| b.secs.cmp(&a.secs));
     apps.truncate(TOP_APPS);
-    ScreenTime { total, apps }
+    ScreenTime {
+        total,
+        apps,
+        yesterday_total,
+    }
 }
 
 fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+fn yesterday() -> String {
+    (chrono::Local::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// Sum of a saved day file, if one exists (the tracker has been writing
+/// them since day one; this is the first reader).
+fn load_total(app: &AppHandle, day: &str) -> Option<u64> {
+    Some(load_day(app, day)?.values().sum())
 }
 
 fn day_file(app: &AppHandle, day: &str) -> Option<PathBuf> {

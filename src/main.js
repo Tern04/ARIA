@@ -609,6 +609,20 @@ function renderGithub() {
   }
 }
 
+// Today → time, this week → weekday, older → day.month.
+function fmtMailTime(unixSecs) {
+  const d = new Date(unixSecs * 1000);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) {
+    return d.toLocaleTimeString("cs-CZ", { hour: "2-digit", minute: "2-digit" });
+  }
+  if (now - d < 6 * 86400 * 1000) {
+    return d.toLocaleDateString("cs-CZ", { weekday: "short" });
+  }
+  return d.toLocaleDateString("cs-CZ", { day: "numeric", month: "numeric" });
+}
+
 // null = show all accounts; otherwise the label to filter the mail list by.
 let mailFilter = null;
 
@@ -644,6 +658,9 @@ function renderEmail() {
 
   const renderList = () => {
     list.replaceChildren();
+    list.classList.add("fill-list");
+    const showTime =
+      document.getElementById("widget-email").dataset.size === "l";
     const shown = p.messages.filter((m) => !mailFilter || m.account === mailFilter);
     for (const msg of shown) {
       const li = document.createElement("li");
@@ -655,7 +672,10 @@ function renderEmail() {
       from.textContent = msg.from;
       const tag = document.createElement("span");
       tag.className = "mail-acct-tag";
-      tag.textContent = msg.account;
+      tag.textContent =
+        showTime && msg.timestamp > 0
+          ? `${msg.account} · ${fmtMailTime(msg.timestamp)}`
+          : msg.account;
       fromLine.append(from, tag);
       const subject = document.createElement("div");
       subject.className = "mail-subject";
@@ -796,13 +816,29 @@ function setStatus(id, online) {
 let screentimeData = null;
 function renderScreentime() {
   if (!screentimeData) return;
+  const p = screentimeData;
+  const size = document.getElementById("widget-screentime").dataset.size;
   const body = document.querySelector("#widget-screentime .widget-body");
   body.replaceChildren();
   const total = document.createElement("div");
   total.className = "st-total";
-  total.textContent = fmtDuration(screentimeData.total);
+  total.textContent = fmtDuration(p.total);
   body.append(total);
-  for (const app of screentimeData.apps) {
+  // Large: trend line against yesterday's saved tally.
+  if (size === "l" && p.yesterday_total != null) {
+    const d = p.total - p.yesterday_total;
+    const delta = document.createElement("div");
+    delta.className = "st-delta";
+    delta.textContent =
+      `yesterday ${fmtDuration(p.yesterday_total)} (${d >= 0 ? "+" : "−"}${fmtDuration(Math.abs(d))})`;
+    body.append(delta);
+  }
+  const list = document.createElement("div");
+  list.className = "st-list fill-list";
+  const max = p.apps[0]?.secs || 1;
+  for (const app of p.apps) {
+    const wrap = document.createElement("div");
+    wrap.className = "st-app";
     const row = document.createElement("div");
     row.className = "st-row";
     const name = document.createElement("span");
@@ -812,8 +848,17 @@ function renderScreentime() {
     time.className = "st-time";
     time.textContent = fmtDuration(app.secs);
     row.append(name, time);
-    body.append(row);
+    // share bar relative to the top app — a chart at zero data cost
+    const bar = document.createElement("div");
+    bar.className = "st-bar";
+    const fill = document.createElement("div");
+    fill.className = "st-bar-fill";
+    fill.style.width = `${(app.secs / max) * 100}%`;
+    bar.append(fill);
+    wrap.append(row, bar);
+    list.append(wrap);
   }
+  body.append(list);
 }
 
 let musicData = null;
