@@ -213,6 +213,17 @@ body.editing .win-resize {
   justify-content: center;
 }
 
+/* Glanceable s content sits centered, not tucked into the corner.
+   (Crypto/hardware keep their full-width rows.) */
+.widget--discord[data-size="s"] .widget-body,
+.widget--screentime[data-size="s"] .widget-body,
+.widget--email[data-size="s"] .widget-body,
+.widget--stag[data-size="s"] .widget-body,
+.widget--music[data-size="s"] .widget-body {
+  align-items: center;
+  text-align: center;
+}
+
 /* Small SYSTEM: numeric readout — the rings need more height than one
    row guarantees, so value + name stand alone. */
 .widget[data-size="s"] .gauge-canvas {
@@ -303,9 +314,8 @@ body.editing .win-resize {
 /* Large: more room means more content, not just more air.
    MAIL and SCREEN TIME reveal extra rows the collectors already send;
    the rest scale their signature element up. */
-.widget[data-size="l"] .gh-wall {
-  max-height: 160px;
-}
+/* the wall keeps its m proportions at l; extra space goes to the
+   notification/PR lists instead of just bigger squares */
 
 /* ── MAIL widget ────────────────────────────────────────────
    Rows breathe apart on tall sizes and fade-clip on short ones. */
@@ -367,6 +377,7 @@ body.editing .win-resize {
 .gh-list {
   display: flex;
   flex-direction: column;
+  justify-content: space-evenly; /* few items spread, no mid-widget hole */
   gap: var(--fill-gap);
 }
 
@@ -438,6 +449,13 @@ body.editing .win-resize {
   flex-direction: column;
 }
 
+/* only the sparkline gives way when the block runs out of height */
+.widget--crypto .coin-head,
+.widget--crypto .coin-sub,
+.widget--crypto .period-bar {
+  flex-shrink: 0;
+}
+
 .coin-sub {
   margin-top: 5px;
   font: 500 0.66rem/1.4 "JetBrains Mono", ui-monospace, monospace;
@@ -458,8 +476,14 @@ body.editing .win-resize {
 .music-main {
   display: flex;
   align-items: center;
+  justify-content: center; /* the art+info block sits mid-widget */
   gap: 14px;
   min-height: 0;
+}
+
+/* transport centered at every size */
+.music-controls {
+  justify-content: center;
 }
 
 .music-art {
@@ -493,6 +517,7 @@ body.editing .win-resize {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%; /* keeps the track full-width in centered s bodies */
 }
 
 .music-progress-track {
@@ -513,19 +538,13 @@ body.editing .win-resize {
 }
 
 .music-progress-time {
-  display: none;
   flex-shrink: 0;
   font: 500 0.66rem/1.4 "JetBrains Mono", ui-monospace, monospace;
   opacity: 0.6;
 }
 
-.widget[data-size="l"] .music-progress-time {
-  display: inline;
-}
-
 .widget[data-size="s"] .music-art,
-.widget[data-size="s"] .track-album,
-.widget[data-size="s"] .music-progress {
+.widget[data-size="s"] .track-album {
   display: none;
 }
 
@@ -567,6 +586,16 @@ body.editing .win-resize {
 .stag-today--free {
   opacity: 0.5;
   font: 400 0.78rem/1.4 "Inter", system-ui, sans-serif;
+}
+
+.stag-next-exam {
+  font: 500 0.72rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.6;
+}
+
+.exam-empty {
+  font: 400 0.74rem/1.4 "Inter", system-ui, sans-serif;
+  opacity: 0.45;
 }
 
 /* large size: courses | upcoming exams side by side */
@@ -652,6 +681,40 @@ body.editing .win-resize {
   opacity: 0.8;
 }
 
+/* large size: channels | friends side by side */
+.dc-cols {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 3fr 2fr;
+  gap: 0 18px;
+}
+
+.dc-cols .dc-voice {
+  flex: 1 1 auto;
+}
+
+.dc-friend-col {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  gap: var(--fill-gap);
+}
+
+.dc-friend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font: 500 0.78rem/1.4 "Inter", system-ui, sans-serif;
+}
+
+.dc-friend-row .dc-activity {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* faint tracked person-hours tag, pushed to the row's right edge */
 .dc-chan-score {
   flex-shrink: 0;
@@ -672,10 +735,13 @@ body.editing .win-resize {
 }
 
 .dc-chan-name {
+  /* fixed column so occupants/dashes line up across rows */
+  flex: 0 0 clamp(6em, 28%, 9em);
   font: 600 0.78rem/1.3 "JetBrains Mono", ui-monospace, monospace;
   letter-spacing: 0.04em;
   white-space: nowrap;
-  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .dc-occupants {

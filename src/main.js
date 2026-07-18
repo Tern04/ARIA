@@ -353,6 +353,46 @@ function renderDiscord() {
     }
     list.append(row);
   }
+
+  // Large: channels left, friends as a full column right (status dot,
+  // name, current game/song per row) — more detail than the m strip.
+  if (size === "l" && p.friends.length > 0) {
+    const cols = document.createElement("div");
+    cols.className = "dc-cols";
+    const left = document.createElement("div");
+    left.className = "stag-col";
+    left.append(list);
+    const right = document.createElement("div");
+    right.className = "stag-col";
+    const label = document.createElement("div");
+    label.className = "stag-section";
+    label.textContent = "FRIENDS";
+    const col = document.createElement("div");
+    col.className = "dc-friend-col fill-list";
+    for (const f of p.friends) {
+      const row = document.createElement("div");
+      row.className = "dc-friend-row";
+      const dot = document.createElement("i");
+      dot.className = `dc-dot dc-dot--${f.status}`;
+      const name = document.createElement("span");
+      name.className = "dc-friend-name";
+      name.textContent = f.name;
+      row.append(dot, name);
+      if (f.activity) {
+        const act = document.createElement("span");
+        act.className = "dc-activity";
+        act.textContent = f.activity;
+        row.title = f.activity;
+        row.append(act);
+      }
+      col.append(row);
+    }
+    right.append(label, col);
+    cols.append(left, right);
+    body.append(cols);
+    return;
+  }
+
   body.append(list);
 
   if (p.friends.length > 0) {
@@ -366,8 +406,8 @@ function renderDiscord() {
       chip.append(dot, f.name);
       if (f.activity) {
         const act = document.createElement("span");
-        act.className = "dc-activity";
         act.textContent = f.activity;
+        act.className = "dc-activity";
         chip.title = f.activity;
         chip.append(act);
       }
@@ -1035,9 +1075,16 @@ function renderStag() {
 
     const size = document.getElementById("widget-stag").dataset.size;
 
-    // Small: just the header and what's on today.
+    // Small: header, today's classes, and the nearest exam.
     if (size === "s") {
       body.append(buildTodayStrip(p.timetable));
+      if (p.exams?.length) {
+        const next = document.createElement("div");
+        next.className = "stag-next-exam";
+        const ex = p.exams[0];
+        next.textContent = `next exam · ${ex.subject} · ${ex.date}${ex.time ? ` ${ex.time}` : ""}`;
+        body.append(next);
+      }
       return;
     }
 
@@ -1069,7 +1116,9 @@ function renderStag() {
     }
 
     // Large: two-column bottom — courses left, upcoming exams right.
-    if (size === "l" && p.exams?.length) {
+    // The exams column always renders so the layout reads the same
+    // even outside the exam period.
+    if (size === "l") {
       const bottom = document.createElement("div");
       bottom.className = "stag-bottom";
       const coursesCol = document.createElement("div");
@@ -1082,7 +1131,13 @@ function renderStag() {
       examsLabel.textContent = "EXAMS";
       const examList = document.createElement("div");
       examList.className = "exam-list fill-list";
-      for (const ex of p.exams) {
+      if (!p.exams?.length) {
+        const empty = document.createElement("div");
+        empty.className = "exam-empty";
+        empty.textContent = "no upcoming exams";
+        examList.append(empty);
+      }
+      for (const ex of p.exams ?? []) {
         const row = document.createElement("div");
         row.className = "exam-row";
         const date = document.createElement("span");
