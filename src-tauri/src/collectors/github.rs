@@ -4,8 +4,11 @@ use tauri::{AppHandle, Emitter};
 
 const POLL: Duration = Duration::from_secs(120);
 const API_VERSION: &str = "2022-11-28";
-// Enough columns to fill the widget without dominating it.
-const CALENDAR_WEEKS: usize = 18;
+// Enough columns to fill the widget; the wall stretches to fit.
+const CALENDAR_WEEKS: usize = 26;
+// Item lists rendered at the large size.
+const NOTIF_ITEMS: usize = 5;
+const PR_ITEMS: usize = 3;
 
 #[derive(Serialize, Clone)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -15,11 +18,27 @@ enum GithubState {
     },
     Connected {
         notifications: usize,
+        notification_items: Vec<NotificationItem>,
         open_prs: u64,
-        recent_repo: Option<RecentRepo>,
+        pr_items: Vec<PrItem>,
+        recent_repos: Vec<RecentRepo>,
         contributions: Vec<Vec<u32>>,
         total_contributions: u64,
     },
+}
+
+#[derive(Serialize, Clone)]
+struct NotificationItem {
+    title: String,
+    repo: String,
+    reason: String,
+}
+
+#[derive(Serialize, Clone)]
+struct PrItem {
+    title: String,
+    repo: String,
+    number: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -63,33 +82,73 @@ async fn poll(client: &reqwest::Client) -> Result<GithubState, String> {
         get(
             client,
             &token,
-            "https://api.github.com/user/repos?sort=pushed&per_page=1",
+            "https://api.github.com/user/repos?sort=pushed&per_page=3",
         ),
         contribution_calendar(client, &token),
     );
 
-    let notifications = notifications?.as_array().map(|a| a.len()).unwrap_or(0);
-    let open_prs = prs?["total_count"].as_u64().unwrap_or(0);
+    let notifications = notifications?;
+    let notifications = notifications.as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let notification_items = notifications
+        .iter()
+        .take(NOTIF_ITEMS)
+        .map(|n| NotificationItem {
+            title: n["subject"]["title"].as_str().unwrap_or("?").to_string(),
+            repo: n["repository"]["name"].as_str().unwrap_or("").to_string(),
+            reason: n["reason"].as_str().unwrap_or("").replace('_', " "),
+        })
+        .collect();
+    let notifications = notifications.len();
 
-    let recent_repo = repos.ok().and_then(|r| {
-        let repo = r.as_array()?.first()?.clone();
-        Some(RecentRepo {
-            name: repo["name"].as_str()?.to_string(),
-            pushed_at: repo["pushed_at"]
+    let prs = prs?;
+    let open_prs = prs["total_count"].as_u64().unwrap_or(0);
+    let pr_items = prs["items"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+        .iter()
+        .take(PR_ITEMS)
+        .map(|p| PrItem {
+            title: p["title"].as_str().unwrap_or("?").to_string(),
+            repo: p["repository_url"]
                 .as_str()
-                .and_then(|t| t.split('T').next())
+                .and_then(|u| u.rsplit('/').next())
                 .unwrap_or("")
                 .to_string(),
+            number: p["number"].as_u64().unwrap_or(0),
         })
-    });
+        .collect();
+
+    let recent_repos = repos
+        .ok()
+        .and_then(|r| {
+            Some(
+                r.as_array()?
+                    .iter()
+                    .filter_map(|repo| {
+                        Some(RecentRepo {
+                            name: repo["name"].as_str()?.to_string(),
+                            pushed_at: repo["pushed_at"]
+                                .as_str()
+                                .and_then(|t| t.split('T').next())
+                                .unwrap_or("")
+                                .to_string(),
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .unwrap_or_default();
 
     // The calendar needs read:user scope; degrade to an empty wall without it.
     let (contributions, total_contributions) = calendar.unwrap_or_default();
 
     Ok(GithubState::Connected {
         notifications,
+        notification_items,
         open_prs,
-        recent_repo,
+        pr_items,
+        recent_repos,
         contributions,
         total_contributions,
     })

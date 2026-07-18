@@ -303,8 +303,63 @@ body.editing .win-resize {
    MAIL and SCREEN TIME reveal extra rows the collectors already send;
    the rest scale their signature element up. */
 .widget[data-size="l"] .gh-wall {
-  max-height: 116px; /* cells grow ~13px */
-  max-width: 304px;
+  max-height: 160px;
+}
+
+/* ── GITHUB widget ──────────────────────────────────────────
+   Stats spread over the full width; notification/PR rows reuse the
+   mail two-line pattern; the wall stretches edge to edge. */
+
+.gh-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.gh-stats .stat-row {
+  justify-content: center;
+}
+
+.gh-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fill-gap);
+}
+
+.gh-item {
+  min-width: 0;
+}
+
+.gh-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.gh-item-title {
+  flex: 1;
+  font: 600 0.78rem/1.35 "Inter", system-ui, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gh-item-tag {
+  flex-shrink: 0;
+  font: 500 0.64rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+
+.gh-item-sub {
+  font: 400 0.7rem/1.35 "Inter", system-ui, sans-serif;
+  opacity: 0.5;
+}
+
+.gh-total {
+  text-align: center;
 }
 
 /* metrics strip under the gauges (RAM GB · net rates · uptime) */
@@ -581,6 +636,8 @@ body.editing .win-resize {
 }
 
 .dc-occupants {
+  flex: 1;
+  text-align: center; /* people sit mid-row, not glued to the names */
   font: 400 0.72rem/1.3 "Inter", system-ui, sans-serif;
   opacity: 0.75;
   overflow: hidden;

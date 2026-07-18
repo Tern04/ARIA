@@ -521,19 +521,69 @@ function renderGithub() {
     body.append(span, form);
     return;
   }
-  body.append(
+  const size = document.getElementById("widget-github").dataset.size;
+
+  // Stats side by side so the row uses the full width.
+  const stats = document.createElement("div");
+  stats.className = "gh-stats";
+  stats.append(
     statRow(p.notifications, "notifications"),
     statRow(p.open_prs, "open PRs"),
   );
-  if (p.recent_repo) {
+  body.append(stats);
+
+  // Large: notification titles (and open PRs when few of them) as
+  // mail-style two-line rows.
+  if (size === "l") {
+    const items = [
+      ...(p.notification_items ?? []).map((n) => ({
+        title: n.title,
+        tag: n.repo,
+        sub: n.reason,
+      })),
+      ...((p.notification_items?.length ?? 0) < 3
+        ? (p.pr_items ?? []).map((pr) => ({
+            title: pr.title,
+            tag: pr.repo,
+            sub: `PR #${pr.number}`,
+          }))
+        : []),
+    ];
+    if (items.length > 0) {
+      const list = document.createElement("div");
+      list.className = "gh-list fill-list";
+      for (const it of items) {
+        const row = document.createElement("div");
+        row.className = "gh-item";
+        const head = document.createElement("div");
+        head.className = "gh-item-head";
+        const title = document.createElement("span");
+        title.className = "gh-item-title";
+        title.textContent = it.title;
+        const tag = document.createElement("span");
+        tag.className = "gh-item-tag";
+        tag.textContent = it.tag;
+        head.append(title, tag);
+        const sub = document.createElement("div");
+        sub.className = "gh-item-sub";
+        sub.textContent = it.sub;
+        row.append(head, sub);
+        list.append(row);
+      }
+      body.append(list);
+    }
+  }
+
+  const repos = size === "l" ? (p.recent_repos ?? []).slice(0, 2) : (p.recent_repos ?? []).slice(0, 1);
+  for (const r of repos) {
     const repo = document.createElement("div");
     repo.className = "gh-repo";
     const name = document.createElement("span");
     name.className = "gh-repo-name";
-    name.textContent = p.recent_repo.name;
+    name.textContent = r.name;
     const when = document.createElement("span");
     when.className = "gh-repo-when";
-    when.textContent = `pushed ${p.recent_repo.pushed_at}`;
+    when.textContent = `pushed ${r.pushed_at}`;
     repo.append(name, when);
     body.append(repo);
   }

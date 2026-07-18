@@ -429,8 +429,7 @@ body.interactive .mod-hint {
   margin-top: 6px;
   flex: 1;
   min-height: 41px; /* never collapse: 7 × 3px cells + 6 × 3px gaps */
-  max-height: 88px; /* 7 × 10px cells + 6 × 3px gaps */
-  max-width: 232px; /* 18 × 10px cells + 17 × 3px gaps */
+  max-height: 120px;
 }
 
 .gh-cell {

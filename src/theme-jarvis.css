@@ -313,8 +313,7 @@ body.interactive .widget {
   margin-top: 4px;
   flex: 1;
   min-height: 33px; /* never collapse: 7 × 3px cells + 6 × 2px gaps */
-  max-height: 75px; /* 7 × 9px cells + 6 × 2px gaps */
-  max-width: 196px; /* 18 × 9px cells + 17 × 2px gaps */
+  max-height: 120px;
 }
 
 .gh-cell {
