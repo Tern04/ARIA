@@ -38,7 +38,9 @@ struct Friend {
 #[derive(Serialize, Deserialize, Default)]
 #[serde(default)]
 struct DiscordConfig {
+    /// Legacy single-server field; merged into guild_ids on load.
     guild_id: String,
+    guild_ids: Vec<String>,
     friends: Vec<Friend>,
 }
 
@@ -50,10 +52,19 @@ enum DiscordState {
         needs_setup: bool,
     },
     Connected {
+        /// All configured ids, comma-joined — prefills the setup form.
         guild_id: String,
-        voice: Vec<VoiceChannel>,
+        servers: Vec<ServerVoice>,
         friends: Vec<FriendStatus>,
     },
+}
+
+/// One configured server's voice channels, in configured order.
+#[derive(Serialize, Clone, PartialEq)]
+struct ServerVoice {
+    id: String,
+    name: String,
+    voice: Vec<VoiceChannel>,
 }
 
 #[derive(Serialize, Clone, PartialEq)]
@@ -94,15 +105,30 @@ struct PresenceState {
     activity: Option<String>,
 }
 
-/// Live gateway view of the configured guild.
+/// Live gateway view of one configured guild.
 #[derive(Default)]
 struct Guild {
-    channels: BTreeMap<String, String>,     // voice channel id -> name
-    voice: HashMap<String, VoiceState>,     // user id -> voice state
+    name: String,                       // server name, from GUILD_CREATE
+    channels: BTreeMap<String, String>, // voice channel id -> name
+    voice: HashMap<String, VoiceState>, // user id -> voice state
+    loaded: bool,                       // GUILD_CREATE processed
+}
+
+/// Session-wide state: per-guild views plus user-keyed maps shared across
+/// guilds (presence/names are per-user; channel ids are globally unique so
+/// one score map serves every server).
+#[derive(Default)]
+struct GuildSet {
+    guilds: BTreeMap<String, Guild>,          // guild id -> live view
     presence: HashMap<String, PresenceState>, // user id -> status + activity
-    names: HashMap<String, String>,         // user id -> display name
-    scores: HashMap<String, u64>,           // channel id -> person-minutes, persisted
-    loaded: bool,                           // GUILD_CREATE for our guild processed
+    names: HashMap<String, String>,           // user id -> display name
+    scores: HashMap<String, u64>,             // channel id -> person-minutes, persisted
+}
+
+impl GuildSet {
+    fn any_loaded(&self) -> bool {
+        self.guilds.values().any(|g| g.loaded)
+    }
 }
 
 pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
@@ -146,7 +172,7 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
                 // Auth-shaped failure: re-identifying with the same
                 // credentials cannot succeed, so wait until they change
                 // (or the user re-submits the setup form).
-                let failed = (token, cfg.guild_id);
+                let failed = (token, cfg.guild_ids);
                 let gen0 = SETUP_GEN.load(Ordering::Relaxed);
                 loop {
                     tokio::time::sleep(SETUP_RETRY).await;
@@ -156,7 +182,7 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
                         last = None;
                         break;
                     }
-                    let current = credentials(&app).ok().map(|(t, c)| (t, c.guild_id));
+                    let current = credentials(&app).ok().map(|(t, c)| (t, c.guild_ids));
                     if current != Some(failed.clone()) {
                         break;
                     }
@@ -235,9 +261,9 @@ async fn session(
         return (format!("identify send failed: {e}"), false);
     }
 
-    let mut guild = Guild {
+    let mut set = GuildSet {
         scores: load_scores(app),
-        ..Guild::default()
+        ..GuildSet::default()
     };
     let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + hb, hb);
     let mut sampler = tokio::time::interval_at(
@@ -260,8 +286,8 @@ async fn session(
                 }
             }
             _ = sampler.tick() => {
-                if guild.loaded && sample_popularity(app, &mut guild) {
-                    emit_changed(app, last, build_state(&guild, cfg));
+                if set.any_loaded() && sample_popularity(app, &mut set) {
+                    emit_changed(app, last, build_state(&set, cfg));
                 }
             }
             _ = RECONFIG.notified() => {
@@ -279,11 +305,11 @@ async fn session(
                             if let Some(s) = v["s"].as_u64() {
                                 last_seq = Some(s);
                             }
-                            if let Err(e) = dispatch(&v, cfg, &mut guild) {
+                            if let Err(e) = dispatch(&v, cfg, &mut set) {
                                 return e;
                             }
-                            if guild.loaded {
-                                emit_changed(app, last, build_state(&guild, cfg));
+                            if set.any_loaded() {
+                                emit_changed(app, last, build_state(&set, cfg));
                             }
                         }
                         // Server-requested heartbeat: answer immediately.
@@ -324,25 +350,42 @@ async fn session(
     }
 }
 
-fn dispatch(v: &Value, cfg: &DiscordConfig, g: &mut Guild) -> Result<(), (String, bool)> {
+fn dispatch(v: &Value, cfg: &DiscordConfig, set: &mut GuildSet) -> Result<(), (String, bool)> {
     let d = &v["d"];
-    let gid = cfg.guild_id.as_str();
+    let configured = |val: &Value| {
+        val.as_str()
+            .map(|id| cfg.guild_ids.iter().any(|g| g == id))
+            .unwrap_or(false)
+    };
     match v["t"].as_str().unwrap_or("") {
         "READY" => {
-            let member = d["guilds"]
-                .as_array()
-                .is_some_and(|gs| gs.iter().any(|x| x["id"] == gid));
+            let member = d["guilds"].as_array().is_some_and(|gs| {
+                cfg.guild_ids
+                    .iter()
+                    .any(|gid| gs.iter().any(|x| x["id"] == gid.as_str()))
+            });
             if !member {
                 return Err((
-                    "bot is not in that server — check the server ID and the invite".into(),
+                    "bot is not in any of those servers — check the IDs and the invites".into(),
                     true,
                 ));
             }
         }
-        "GUILD_CREATE" if d["id"] == gid => {
+        "GUILD_CREATE" if configured(&d["id"]) => {
             // Small guild: channels, voice states, members and (online)
             // presences all arrive inlined in this one event. Guilds past
             // the large threshold would need Request Guild Members (op 8).
+            let gid = d["id"].as_str().unwrap_or_default().to_string();
+            for m in d["members"].as_array().into_iter().flatten() {
+                if let (Some(u), Some(n)) = (m["user"]["id"].as_str(), member_name(m)) {
+                    set.names.insert(u.into(), n);
+                }
+            }
+            for p in d["presences"].as_array().into_iter().flatten() {
+                apply_presence(set, p);
+            }
+            let g = set.guilds.entry(gid.clone()).or_default();
+            g.name = d["name"].as_str().unwrap_or(&gid).to_string();
             g.channels.clear();
             for c in d["channels"].as_array().into_iter().flatten() {
                 if c["type"].as_u64() == Some(2) {
@@ -352,26 +395,23 @@ fn dispatch(v: &Value, cfg: &DiscordConfig, g: &mut Guild) -> Result<(), (String
                 }
             }
             g.voice.clear();
-            for vs in d["voice_states"].as_array().into_iter().flatten() {
-                apply_voice_state(g, vs);
-            }
-            for m in d["members"].as_array().into_iter().flatten() {
-                if let (Some(u), Some(n)) = (m["user"]["id"].as_str(), member_name(m)) {
-                    g.names.insert(u.into(), n);
-                }
-            }
-            for p in d["presences"].as_array().into_iter().flatten() {
-                apply_presence(g, p);
-            }
             g.loaded = true;
+            for vs in d["voice_states"].as_array().into_iter().flatten() {
+                apply_voice_state(set, &gid, vs);
+            }
         }
-        "VOICE_STATE_UPDATE" if d["guild_id"] == gid => {
-            apply_voice_state(g, d);
+        "VOICE_STATE_UPDATE" if configured(&d["guild_id"]) => {
+            let gid = d["guild_id"].as_str().unwrap_or_default().to_string();
+            apply_voice_state(set, &gid, d);
         }
-        "PRESENCE_UPDATE" if d["guild_id"] == gid => {
-            apply_presence(g, d);
+        "PRESENCE_UPDATE" if configured(&d["guild_id"]) => {
+            apply_presence(set, d);
         }
-        "CHANNEL_CREATE" | "CHANNEL_UPDATE" if d["guild_id"] == gid => {
+        "CHANNEL_CREATE" | "CHANNEL_UPDATE" if configured(&d["guild_id"]) => {
+            let g = set
+                .guilds
+                .entry(d["guild_id"].as_str().unwrap_or_default().to_string())
+                .or_default();
             if let Some(id) = d["id"].as_str() {
                 // An UPDATE can change a channel's type, so re-check it.
                 if d["type"].as_u64() == Some(2) {
@@ -383,14 +423,19 @@ fn dispatch(v: &Value, cfg: &DiscordConfig, g: &mut Guild) -> Result<(), (String
                 }
             }
         }
-        "CHANNEL_DELETE" if d["guild_id"] == gid => {
-            if let Some(id) = d["id"].as_str() {
-                g.channels.remove(id);
+        "CHANNEL_DELETE" if configured(&d["guild_id"]) => {
+            if let Some(g) = set
+                .guilds
+                .get_mut(d["guild_id"].as_str().unwrap_or_default())
+            {
+                if let Some(id) = d["id"].as_str() {
+                    g.channels.remove(id);
+                }
             }
         }
-        "GUILD_MEMBER_ADD" | "GUILD_MEMBER_UPDATE" if d["guild_id"] == gid => {
+        "GUILD_MEMBER_ADD" | "GUILD_MEMBER_UPDATE" if configured(&d["guild_id"]) => {
             if let (Some(u), Some(n)) = (d["user"]["id"].as_str(), member_name(d)) {
-                g.names.insert(u.into(), n);
+                set.names.insert(u.into(), n);
             }
         }
         _ => {}
@@ -400,13 +445,14 @@ fn dispatch(v: &Value, cfg: &DiscordConfig, g: &mut Guild) -> Result<(), (String
 
 /// Shared by GUILD_CREATE voice_states entries and VOICE_STATE_UPDATE — the
 /// payload shape is the same. `mute`/`deaf` fold in server-side mutes.
-fn apply_voice_state(g: &mut Guild, vs: &Value) {
+fn apply_voice_state(set: &mut GuildSet, gid: &str, vs: &Value) {
     let Some(u) = vs["user_id"].as_str() else {
         return;
     };
     if let Some(n) = member_name(&vs["member"]) {
-        g.names.insert(u.into(), n);
+        set.names.insert(u.into(), n);
     }
+    let g = set.guilds.entry(gid.to_string()).or_default();
     match vs["channel_id"].as_str() {
         Some(c) => {
             let b = |k: &str| vs[k].as_bool().unwrap_or(false);
@@ -426,9 +472,9 @@ fn apply_voice_state(g: &mut Guild, vs: &Value) {
     }
 }
 
-fn apply_presence(g: &mut Guild, p: &Value) {
+fn apply_presence(set: &mut GuildSet, p: &Value) {
     if let (Some(u), Some(s)) = (p["user"]["id"].as_str(), p["status"].as_str()) {
-        g.presence.insert(
+        set.presence.insert(
             u.into(),
             PresenceState {
                 status: s.into(),
@@ -465,54 +511,67 @@ fn member_name(m: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn build_state(g: &Guild, cfg: &DiscordConfig) -> DiscordState {
+fn build_state(set: &GuildSet, cfg: &DiscordConfig) -> DiscordState {
     let display = |id: &str| {
         cfg.friends
             .iter()
             .find(|f| f.id == id)
             .map(|f| f.name.clone())
-            .or_else(|| g.names.get(id).cloned())
+            .or_else(|| set.names.get(id).cloned())
             .unwrap_or_else(|| format!("user…{}", &id[id.len().saturating_sub(4)..]))
     };
 
-    let mut voice: Vec<VoiceChannel> = g
-        .channels
+    // Configured order, loaded guilds only.
+    let servers = cfg
+        .guild_ids
         .iter()
-        .map(|(id, name)| {
-            // Sorted so payload comparison is stable across HashMap orders.
-            let mut occupants: Vec<Occupant> = g
-                .voice
+        .filter_map(|gid| {
+            let g = set.guilds.get(gid).filter(|g| g.loaded)?;
+            let mut voice: Vec<VoiceChannel> = g
+                .channels
                 .iter()
-                .filter(|(_, v)| v.channel == *id)
-                .map(|(u, v)| Occupant {
-                    name: display(u),
-                    mute: v.mute,
-                    deaf: v.deaf,
-                    streaming: v.streaming,
-                    activity: g.presence.get(u).and_then(|p| p.activity.clone()),
+                .map(|(id, name)| {
+                    // Sorted so payload comparison is stable across HashMap orders.
+                    let mut occupants: Vec<Occupant> = g
+                        .voice
+                        .iter()
+                        .filter(|(_, v)| v.channel == *id)
+                        .map(|(u, v)| Occupant {
+                            name: display(u),
+                            mute: v.mute,
+                            deaf: v.deaf,
+                            streaming: v.streaming,
+                            activity: set.presence.get(u).and_then(|p| p.activity.clone()),
+                        })
+                        .collect();
+                    occupants.sort_by(|a, b| a.name.cmp(&b.name));
+                    VoiceChannel {
+                        id: id.clone(),
+                        name: name.clone(),
+                        occupants,
+                        score: set.scores.get(id).copied().unwrap_or(0),
+                    }
                 })
                 .collect();
-            occupants.sort_by(|a, b| a.name.cmp(&b.name));
-            VoiceChannel {
-                id: id.clone(),
-                name: name.clone(),
-                occupants,
-                score: g.scores.get(id).copied().unwrap_or(0),
-            }
+            voice.sort_by(|a, b| {
+                b.score
+                    .cmp(&a.score)
+                    .then(b.occupants.len().cmp(&a.occupants.len()))
+                    .then(a.name.cmp(&b.name))
+            });
+            Some(ServerVoice {
+                id: gid.clone(),
+                name: g.name.clone(),
+                voice,
+            })
         })
         .collect();
-    voice.sort_by(|a, b| {
-        b.score
-            .cmp(&a.score)
-            .then(b.occupants.len().cmp(&a.occupants.len()))
-            .then(a.name.cmp(&b.name))
-    });
 
     let friends = cfg
         .friends
         .iter()
         .map(|f| {
-            let (status, activity) = g
+            let (status, activity) = set
                 .presence
                 .get(&f.id)
                 .map(|p| (p.status.clone(), p.activity.clone()))
@@ -526,8 +585,8 @@ fn build_state(g: &Guild, cfg: &DiscordConfig) -> DiscordState {
         .collect();
 
     DiscordState::Connected {
-        guild_id: cfg.guild_id.clone(),
-        voice,
+        guild_id: cfg.guild_ids.join(", "),
+        servers,
         friends,
     }
 }
@@ -535,20 +594,27 @@ fn build_state(g: &Guild, cfg: &DiscordConfig) -> DiscordState {
 /// Adds one person-minute per current occupant to their channel's tally and
 /// persists. Returns true when any tally changed. This sampling approach
 /// loses at most one minute on a crash, unlike transition accounting.
-fn sample_popularity(app: &AppHandle, g: &mut Guild) -> bool {
-    let mut changed = false;
-    for v in g.voice.values() {
-        if g.channels.contains_key(&v.channel) {
-            *g.scores.entry(v.channel.clone()).or_insert(0) += 1;
-            changed = true;
-        }
+fn sample_popularity(app: &AppHandle, set: &mut GuildSet) -> bool {
+    let occupied: Vec<String> = set
+        .guilds
+        .values()
+        .flat_map(|g| {
+            g.voice
+                .values()
+                .filter(|v| g.channels.contains_key(&v.channel))
+                .map(|v| v.channel.clone())
+        })
+        .collect();
+    if occupied.is_empty() {
+        return false;
     }
-    if changed {
-        if let Err(e) = save_scores(app, &g.scores) {
-            eprintln!("discord: popularity save failed: {e}");
-        }
+    for channel in occupied {
+        *set.scores.entry(channel).or_insert(0) += 1;
     }
-    changed
+    if let Err(e) = save_scores(app, &set.scores) {
+        eprintln!("discord: popularity save failed: {e}");
+    }
+    true
 }
 
 fn scores_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -586,11 +652,11 @@ fn load_config(app: &AppHandle) -> Result<DiscordConfig, String> {
     let path = config_path(app)?;
     if !path.exists() {
         let template = DiscordConfig {
-            guild_id: String::new(),
             friends: vec![Friend {
                 id: String::new(),
                 name: String::new(),
             }],
+            ..DiscordConfig::default()
         };
         let json = serde_json::to_string_pretty(&template).map_err(|e| e.to_string())?;
         std::fs::write(&path, json).map_err(|e| e.to_string())?;
@@ -598,7 +664,12 @@ fn load_config(app: &AppHandle) -> Result<DiscordConfig, String> {
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let mut cfg: DiscordConfig = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     cfg.friends.retain(|f| !f.id.is_empty());
-    if cfg.guild_id.is_empty() {
+    // Migrate the legacy single-server field into the list.
+    if cfg.guild_ids.is_empty() && !cfg.guild_id.is_empty() {
+        cfg.guild_ids = vec![cfg.guild_id.clone()];
+    }
+    cfg.guild_ids.retain(|g| !g.is_empty());
+    if cfg.guild_ids.is_empty() {
         return Err("enter bot token + server ID".into());
     }
     Ok(cfg)
@@ -611,18 +682,24 @@ fn credentials(app: &AppHandle) -> Result<(String, DiscordConfig), String> {
     Ok((token, cfg))
 }
 
-/// Invoked by the widget's setup form: store the token, set the guild id
-/// (keeping hand-added friends), and nudge the collector to retry now.
-/// An empty token keeps the stored one, so switching servers is one field.
+/// Invoked by the widget's setup form: store the token, set the server
+/// id(s) (keeping hand-added friends), and nudge the collector to retry
+/// now. Accepts one or more ids separated by commas/spaces. An empty token
+/// keeps the stored one, so switching servers is one field.
 #[tauri::command]
 pub async fn discord_setup(app: AppHandle, token: String, guild_id: String) -> Result<(), String> {
     let token = token.trim().to_string();
-    let guild_id = guild_id.trim().to_string();
-    if guild_id.is_empty() {
+    let ids: Vec<String> = guild_id
+        .split([',', ';', ' '])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if ids.is_empty() {
         return Err("server ID is required".into());
     }
-    if !guild_id.chars().all(|c| c.is_ascii_digit()) {
-        return Err("server ID must be numeric (right-click server → Copy Server ID)".into());
+    if ids.iter().any(|id| !id.chars().all(|c| c.is_ascii_digit())) {
+        return Err("server IDs must be numeric (right-click server → Copy Server ID)".into());
     }
     if token.is_empty() {
         super::keychain_secret("discord")
@@ -636,7 +713,8 @@ pub async fn discord_setup(app: AppHandle, token: String, guild_id: String) -> R
         .ok()
         .and_then(|raw| serde_json::from_str(&raw).ok())
         .unwrap_or_default();
-    cfg.guild_id = guild_id;
+    cfg.guild_ids = ids;
+    cfg.guild_id = String::new();
     if cfg.friends.is_empty() {
         cfg.friends.push(Friend {
             id: String::new(),

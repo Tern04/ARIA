@@ -246,7 +246,7 @@ function discordSetupForm(err, prefillGuild, tokenOptional) {
     tokenOptional ? "bot token (empty = keep current)" : "bot token",
     "password",
   );
-  const guild = authInput("server ID");
+  const guild = authInput("server ID(s), comma separated");
   if (prefillGuild) guild.value = prefillGuild;
   const btn = authButton("CONNECT", async (b) => {
     const ok = await invokeAuth(b, err, "discord_setup", {
@@ -277,12 +277,14 @@ function renderDiscord() {
   }
 
   const size = widget.dataset.size;
+  const servers = p.servers ?? [];
 
   // Small: a glanceable headline — how many people are in voice, where.
   if (size === "s") {
-    const total = p.voice.reduce((n, c) => n + c.occupants.length, 0);
+    const allChans = servers.flatMap((s) => s.voice);
+    const total = allChans.reduce((n, c) => n + c.occupants.length, 0);
     body.append(statRow(total, total === 1 ? "person in voice" : "in voice"));
-    const top = p.voice.find((c) => c.occupants.length > 0);
+    const top = allChans.find((c) => c.occupants.length > 0);
     if (top) {
       const chan = document.createElement("div");
       chan.className = "dc-s-chan";
@@ -292,66 +294,75 @@ function renderDiscord() {
     return;
   }
 
-  // Voice channels arrive sorted by popularity; render them all and let
-  // the fill-list fade clip whatever doesn't fit the current size.
+  // Channels arrive per server, sorted by popularity; render them all and
+  // let the fill-list fade clip whatever doesn't fit. With more than one
+  // server each group gets a faint server-name label.
   const list = document.createElement("div");
   list.className = "dc-voice fill-list";
-  for (const chan of p.voice) {
-    const live = chan.occupants.length > 0;
-    const row = document.createElement("div");
-    row.className = live ? "dc-voice-row dc-voice-row--live" : "dc-voice-row";
-    const name = document.createElement("span");
-    name.className = "dc-chan-name";
-    name.textContent = chan.name;
-    row.append(name);
-    if (live) {
-      const count = document.createElement("span");
-      count.className = "dc-count";
-      count.textContent = chan.occupants.length;
-      row.append(count);
+  for (const server of servers) {
+    if (servers.length > 1) {
+      const label = document.createElement("div");
+      label.className = "stag-section";
+      label.textContent = server.name.toUpperCase();
+      list.append(label);
     }
-    const occList = document.createElement("span");
-    occList.className = "dc-occupants";
-    if (!live) {
-      occList.textContent = "—";
-    }
-    for (const o of chan.occupants) {
-      const occ = document.createElement("span");
-      occ.className = "dc-occ";
-      occ.append(o.name);
-      const flag = o.deaf ? "deaf" : o.mute ? "mute" : null;
-      if (flag) {
-        const ico = document.createElement("span");
-        ico.className = "dc-occ-ico";
-        ico.innerHTML = DC_ICONS[flag];
-        ico.title = flag === "deaf" ? "deafened" : "muted";
-        occ.append(ico);
+    for (const chan of server.voice) {
+      const live = chan.occupants.length > 0;
+      const row = document.createElement("div");
+      row.className = live ? "dc-voice-row dc-voice-row--live" : "dc-voice-row";
+      const name = document.createElement("span");
+      name.className = "dc-chan-name";
+      name.textContent = chan.name;
+      row.append(name);
+      if (live) {
+        const count = document.createElement("span");
+        count.className = "dc-count";
+        count.textContent = chan.occupants.length;
+        row.append(count);
       }
-      if (o.streaming) {
-        const liveTag = document.createElement("span");
-        liveTag.className = "dc-live";
-        liveTag.textContent = "LIVE";
-        occ.append(liveTag);
+      const occList = document.createElement("span");
+      occList.className = "dc-occupants";
+      if (!live) {
+        occList.textContent = "—";
       }
-      if (size === "l" && o.activity) {
-        const act = document.createElement("span");
-        act.className = "dc-activity";
-        act.textContent = o.activity;
-        occ.title = o.activity;
-        occ.append(act);
+      for (const o of chan.occupants) {
+        const occ = document.createElement("span");
+        occ.className = "dc-occ";
+        occ.append(o.name);
+        const flag = o.deaf ? "deaf" : o.mute ? "mute" : null;
+        if (flag) {
+          const ico = document.createElement("span");
+          ico.className = "dc-occ-ico";
+          ico.innerHTML = DC_ICONS[flag];
+          ico.title = flag === "deaf" ? "deafened" : "muted";
+          occ.append(ico);
+        }
+        if (o.streaming) {
+          const liveTag = document.createElement("span");
+          liveTag.className = "dc-live";
+          liveTag.textContent = "LIVE";
+          occ.append(liveTag);
+        }
+        if (size === "l" && o.activity) {
+          const act = document.createElement("span");
+          act.className = "dc-activity";
+          act.textContent = o.activity;
+          occ.title = o.activity;
+          occ.append(act);
+        }
+        occList.append(occ);
       }
-      occList.append(occ);
+      row.append(occList);
+      // Large: faint person-hours tag from the popularity tally.
+      if (size === "l" && chan.score >= 60) {
+        const hrs = document.createElement("span");
+        hrs.className = "dc-chan-score";
+        hrs.textContent = `${Math.round(chan.score / 60)} h`;
+        hrs.title = "voice time tracked in this channel";
+        row.append(hrs);
+      }
+      list.append(row);
     }
-    row.append(occList);
-    // Large: faint person-hours tag from the popularity tally.
-    if (size === "l" && chan.score >= 60) {
-      const hrs = document.createElement("span");
-      hrs.className = "dc-chan-score";
-      hrs.textContent = `${Math.round(chan.score / 60)} h`;
-      hrs.title = "voice time tracked in this channel";
-      row.append(hrs);
-    }
-    list.append(row);
   }
 
   // Large: channels left, friends as a full column right (status dot,
