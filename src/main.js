@@ -492,6 +492,64 @@ function openAuthPanel(id) {
 
   if (id === "discord") {
     panel.append(discordSetupForm(err, discordGuildId, true));
+
+    // Friends manager: mirrors the mail account list, but reads the config
+    // file so it works even while the gateway is disconnected.
+    const label = document.createElement("div");
+    label.className = "stag-section";
+    label.textContent = "FRIENDS";
+    const list = document.createElement("div");
+    list.className = "acct-list";
+    window.__TAURI__.core
+      .invoke("discord_list_friends")
+      .then((friends) => {
+        for (const f of friends) {
+          const row = document.createElement("div");
+          row.className = "acct-row";
+          const name = document.createElement("span");
+          name.className = "acct-name";
+          name.textContent = f.name;
+          const who = document.createElement("span");
+          who.className = "acct-user";
+          who.textContent = f.id;
+          const del = document.createElement("button");
+          del.className = "w-btn";
+          del.textContent = "×";
+          del.title = "Remove friend";
+          del.addEventListener("click", async () => {
+            del.disabled = true;
+            try {
+              await window.__TAURI__.core.invoke("discord_remove_friend", { id: f.id });
+              if (authPanelId === "discord") openAuthPanel("discord");
+            } catch (e) {
+              err.textContent = String(e);
+              del.disabled = false;
+            }
+          });
+          row.append(name, who, del);
+          list.append(row);
+        }
+      })
+      .catch((e) => {
+        err.textContent = String(e);
+      });
+    const addForm = document.createElement("div");
+    addForm.className = "auth-form";
+    const fid = authInput("user ID (right-click user → Copy User ID)");
+    const fname = authInput("display name");
+    addForm.append(
+      fid,
+      fname,
+      authButton("ADD FRIEND", async (b) => {
+        const ok = await invokeAuth(b, err, "discord_add_friend", {
+          id: fid.value,
+          name: fname.value,
+        });
+        if (ok) openAuthPanel("discord");
+      }),
+    );
+    panel.append(label, list, addForm);
+
     const out = logoutBtn("discord_logout");
     out.classList.add("auth-danger");
     const note = document.createElement("span");

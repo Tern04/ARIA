@@ -30,7 +30,7 @@ static SETUP_GEN: AtomicU64 = AtomicU64::new(0);
 static RECONFIG: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 #[derive(Serialize, Deserialize, Clone)]
-struct Friend {
+pub struct Friend {
     id: String,
     name: String,
 }
@@ -87,6 +87,7 @@ struct Occupant {
 
 #[derive(Serialize, Clone, PartialEq)]
 struct FriendStatus {
+    id: String, // the friends-manager panel removes by id
     name: String,
     status: String, // online | idle | dnd | offline
     activity: Option<String>,
@@ -577,6 +578,7 @@ fn build_state(set: &GuildSet, cfg: &DiscordConfig) -> DiscordState {
                 .map(|p| (p.status.clone(), p.activity.clone()))
                 .unwrap_or_else(|| ("offline".into(), None));
             FriendStatus {
+                id: f.id.clone(),
                 name: f.name.clone(),
                 status,
                 activity,
@@ -733,6 +735,61 @@ pub async fn discord_setup(app: AppHandle, token: String, guild_id: String) -> R
     if let Err(e) = app.emit("discord", &state) {
         eprintln!("discord emit failed: {e}");
     }
+    Ok(())
+}
+
+/// The configured friends straight from discord.json, so the manager panel
+/// works even while the gateway is disconnected.
+#[tauri::command]
+pub fn discord_list_friends(app: AppHandle) -> Result<Vec<Friend>, String> {
+    let path = config_path(&app)?;
+    let mut cfg: DiscordConfig = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    cfg.friends.retain(|f| !f.id.is_empty());
+    Ok(cfg.friends)
+}
+
+/// Add or update a friend in discord.json (names are what the widget shows).
+#[tauri::command]
+pub fn discord_add_friend(app: AppHandle, id: String, name: String) -> Result<(), String> {
+    let id = id.trim().to_string();
+    let name = name.trim().to_string();
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit()) {
+        return Err("user ID must be numeric (right-click user → Copy User ID)".into());
+    }
+    if name.is_empty() {
+        return Err("display name is required".into());
+    }
+    mutate_friends(&app, move |friends| {
+        if let Some(existing) = friends.iter_mut().find(|f| f.id == id) {
+            existing.name = name;
+        } else {
+            friends.push(Friend { id, name });
+        }
+    })
+}
+
+#[tauri::command]
+pub fn discord_remove_friend(app: AppHandle, id: String) -> Result<(), String> {
+    mutate_friends(&app, move |friends| friends.retain(|f| f.id != id))
+}
+
+/// Shared read-modify-write on discord.json's friends list; nudges the live
+/// session so the change shows without a restart.
+fn mutate_friends(app: &AppHandle, change: impl FnOnce(&mut Vec<Friend>)) -> Result<(), String> {
+    let path = config_path(app)?;
+    let mut cfg: DiscordConfig = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default();
+    cfg.friends.retain(|f| !f.id.is_empty());
+    change(&mut cfg.friends);
+    let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    SETUP_GEN.fetch_add(1, Ordering::Relaxed);
+    RECONFIG.notify_one();
     Ok(())
 }
 

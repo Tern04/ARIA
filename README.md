@@ -15,7 +15,7 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 | CRYPTO | BTC/ETH price, change + sparkline over 1D / 1M / 1Y | CoinGecko (free, no key) |
 | NOW PLAYING | Track info, transport controls, playlist shuffle chips | Apple Music (macOS) |
 | SCREEN TIME | Daily total + top apps by foreground time | Local tracking, idle-aware |
-| DISCORD | Voice channels sorted by how much your group actually uses them (person-minutes tracked locally), who's in them (mute/deafen/streaming), plus online status and current game/song of picked friends | Discord Gateway, own bot token |
+| DISCORD | Voice channels across one or more servers, sorted by how much your group actually uses them (person-minutes tracked locally), who's in them (mute/deafen/streaming), plus online status and current game/song of picked friends | Discord Gateway, own bot token |
 
 ## The board
 
@@ -86,14 +86,14 @@ Add accounts straight in the MAIL widget: label, IMAP host, user, password (for 
 Click CONNECT in the widget — it opens the university CAS login in your browser and catches the ticket on localhost. Log out via the widget's gear.
 
 ### Discord
-Needs a bot in the server you want to watch (~10 min, free):
+Needs a bot in the server(s) you want to watch (~10 min, free):
 
 1. [discord.com/developers/applications](https://discord.com/developers/applications) → **New Application** → **Bot** tab → **Reset Token**, copy it.
 2. Same tab: enable **Presence Intent** and **Server Members Intent** (privileged toggles).
-3. Invite it with zero permissions: `https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot&permissions=0` — membership is all it needs. Give its role access to any restricted voice channels you want visible.
-4. In Discord enable Developer Mode (Settings → Advanced), right-click the server → **Copy Server ID**.
-5. Paste token + server ID into the widget.
-6. Friends list: right-click a user → **Copy User ID**, then add `{ "id": "...", "name": "..." }` entries to `discord.json` (restart to apply).
+3. Invite it with zero permissions: `https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot&permissions=0` — membership is all it needs. Give its role access to any restricted voice channels you want visible. Repeat per server.
+4. In Discord enable Developer Mode (Settings → Advanced), right-click each server → **Copy Server ID**.
+5. Paste token + server ID(s) (comma separated) into the widget.
+6. Friends list: widget gear → **FRIENDS** — add with a user's ID (right-click user → **Copy User ID**) and any display name; applies live.
 
 Channel "popularity" accrues automatically — one point per person-minute in voice, stored locally, so your group's usual channels bubble to the top.
 
@@ -105,7 +105,7 @@ No setup; CoinGecko's free API.
 | File | Where | What |
 |---|---|---|
 | `mail.json` | app config dir¹ | mail accounts (managed by the widget, hand-editable) |
-| `discord.json` | app config dir¹ | server ID + friends list |
+| `discord.json` | app config dir¹ | server IDs + friends list (managed by the widget, hand-editable) |
 | `discord-popularity.json` | app data dir¹ | per-channel person-minute tallies |
 | `screentime/` | app data dir¹ | daily usage JSONs |
 | layout / theme | `localStorage` | board arrangement, chosen theme |
