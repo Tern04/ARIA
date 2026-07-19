@@ -1,4 +1,4 @@
-mod crypto;
+pub mod crypto;
 pub mod discord;
 pub mod email;
 pub mod github;

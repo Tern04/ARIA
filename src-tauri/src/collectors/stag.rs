@@ -94,9 +94,20 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
             if let Err(e) = app.emit("stag", state) {
                 eprintln!("stag emit failed: {e}");
             }
-            tokio::time::sleep(if connected { POLL } else { POLL_DISCONNECTED }).await;
+            tokio::select! {
+                _ = tokio::time::sleep(if connected { POLL } else { POLL_DISCONNECTED }) => {}
+                _ = REFRESH.notified() => {}
+            }
         }
     });
+}
+
+/// Wakes the poll loop early (widget refresh button).
+static REFRESH: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[tauri::command]
+pub fn stag_refresh() {
+    REFRESH.notify_one();
 }
 
 async fn poll(client: &reqwest::Client) -> Result<StagState, String> {

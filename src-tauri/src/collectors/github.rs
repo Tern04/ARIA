@@ -47,6 +47,14 @@ struct RecentRepo {
     pushed_at: String,
 }
 
+/// Wakes the poll loop early (widget refresh button).
+static REFRESH: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[tauri::command]
+pub fn github_refresh() {
+    REFRESH.notify_one();
+}
+
 pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
     tauri::async_runtime::spawn(async move {
         let _ = ready.wait_for(|r| *r).await;
@@ -64,7 +72,10 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
             if let Err(e) = app.emit("github", state) {
                 eprintln!("github emit failed: {e}");
             }
-            tokio::time::sleep(POLL).await;
+            tokio::select! {
+                _ = tokio::time::sleep(POLL) => {}
+                _ = REFRESH.notified() => {}
+            }
         }
     });
 }

@@ -1470,11 +1470,31 @@ function initLayout() {
 
   // Widgets with an account get a gear that opens their log-in/out panel.
   const AUTH_WIDGETS = new Set(["discord", "github", "email", "stag"]);
+  // Slow-polling collectors get a poll-now button.
+  const REFRESH_WIDGETS = { email: "email_refresh", github: "github_refresh", crypto: "crypto_refresh", stag: "stag_refresh" };
 
   for (const id of Object.keys(WIDGETS)) {
     const el = widgetEl(id);
     const controls = document.createElement("div");
     controls.className = "w-controls";
+    if (REFRESH_WIDGETS[id]) {
+      const refresh = document.createElement("button");
+      refresh.className = "w-btn w-refresh";
+      refresh.textContent = "↻";
+      refresh.title = "Refresh now";
+      refresh.addEventListener("click", async () => {
+        // Leave edit mode so the incoming re-render is visible right away.
+        document.body.classList.remove("editing");
+        editBtn.classList.remove("active");
+        tray.hidden = true;
+        try {
+          await window.__TAURI__.core.invoke(REFRESH_WIDGETS[id]);
+        } catch (e) {
+          console.error("refresh failed:", e);
+        }
+      });
+      controls.append(refresh);
+    }
     if (AUTH_WIDGETS.has(id)) {
       const auth = document.createElement("button");
       auth.className = "w-btn w-auth";

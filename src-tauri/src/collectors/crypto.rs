@@ -79,9 +79,22 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
             if let Err(e) = app.emit("crypto", state) {
                 eprintln!("crypto emit failed: {e}");
             }
-            tokio::time::sleep(POLL).await;
+            // sparks/last_ok stay loop-local: a refresh wake only skips the
+            // rest of the sleep, chart caches and budget logic are untouched.
+            tokio::select! {
+                _ = tokio::time::sleep(POLL) => {}
+                _ = REFRESH.notified() => {}
+            }
         }
     });
+}
+
+/// Wakes the poll loop early (widget refresh button).
+static REFRESH: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[tauri::command]
+pub fn crypto_refresh() {
+    REFRESH.notify_one();
 }
 
 async fn poll(

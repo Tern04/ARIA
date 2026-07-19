@@ -44,6 +44,14 @@ struct MailConfig {
     accounts: Vec<ImapAccount>,
 }
 
+/// Wakes the poll loop early (widget refresh button).
+static REFRESH: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+#[tauri::command]
+pub fn email_refresh() {
+    REFRESH.notify_one();
+}
+
 pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
     tauri::async_runtime::spawn(async move {
         let _ = ready.wait_for(|r| *r).await;
@@ -51,7 +59,10 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
             if let Err(e) = refresh(&app).await {
                 eprintln!("email emit failed: {e}");
             }
-            tokio::time::sleep(POLL).await;
+            tokio::select! {
+                _ = tokio::time::sleep(POLL) => {}
+                _ = REFRESH.notified() => {}
+            }
         }
     });
 }
