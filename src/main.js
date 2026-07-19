@@ -1656,6 +1656,19 @@ function initDisplayMenu() {
   const menu = document.getElementById("display-menu");
   const list = document.getElementById("display-monitors");
   const fillBtn = document.getElementById("fill-toggle");
+  const autoBtn = document.getElementById("autostart-toggle");
+  // No bundler, so no plugin guest JS — call the plugin commands directly.
+  const autostart = (cmd) => window.__TAURI__.core.invoke(`plugin:autostart|${cmd}`);
+
+  async function toggleAutostart() {
+    try {
+      const on = await autostart("is_enabled");
+      await autostart(on ? "disable" : "enable");
+      autoBtn.classList.toggle("active", !on);
+    } catch (e) {
+      console.error("autostart toggle failed:", e);
+    }
+  }
 
   async function moveTo(m) {
     if ((loadWinState() || {}).fill) {
@@ -1707,6 +1720,9 @@ function initDisplayMenu() {
       list.append(b);
     });
     fillBtn.classList.toggle("active", !!(loadWinState() || {}).fill);
+    autostart("is_enabled")
+      .then((on) => autoBtn.classList.toggle("active", !!on))
+      .catch(() => {});
   }
 
   btn.addEventListener("click", (e) => {
@@ -1715,6 +1731,7 @@ function initDisplayMenu() {
     menu.hidden = !menu.hidden;
   });
   fillBtn.addEventListener("click", toggleFill);
+  autoBtn.addEventListener("click", toggleAutostart);
   document.addEventListener("click", () => {
     menu.hidden = true;
   });

@@ -6,6 +6,9 @@
   "permissions": [
     "core:default",
     "opener:default",
+    "autostart:allow-enable",
+    "autostart:allow-disable",
+    "autostart:allow-is-enabled",
     "core:window:allow-available-monitors",
     "core:window:allow-current-monitor",
     "core:window:allow-primary-monitor",
