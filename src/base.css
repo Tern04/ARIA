@@ -55,6 +55,7 @@
 .theme-menu button[data-theme="jarvis"] { --swatch: #00d4ff; }
 .theme-menu button[data-theme="porcelain"] { --swatch: #3450d2; }
 .theme-menu button[data-theme="nord"] { --swatch: #88c0d0; }
+.theme-menu button[data-theme="terminal"] { --swatch: #33ff66; }
 
 .theme-menu button:hover {
   background: rgba(255, 255, 255, 0.07);

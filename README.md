@@ -21,7 +21,7 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 
 - 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
-- Three themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light).
+- Five themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Terminal** (phosphor green).
 - The HUD is click-through so it never steals input. Hold **⌥ Option** to interact with it (buttons, chips, edit mode). The pin button flips it above all windows temporarily.
 
 ## Accounts & secrets

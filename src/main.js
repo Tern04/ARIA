@@ -1612,7 +1612,7 @@ function initLayout() {
   applyLayout();
 }
 
-const THEME_NAMES = ["studio", "jarvis", "porcelain", "nord"];
+const THEME_NAMES = ["studio", "jarvis", "porcelain", "nord", "terminal"];
 
 function redrawGauges() {
   for (const name of ["cpu", "ram", "gpu"]) {

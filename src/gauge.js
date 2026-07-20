@@ -36,6 +36,14 @@ THEMES.nord = {
   tip: "#eceff4",
   glow: false,
 };
+THEMES.terminal = {
+  accent: "#33ff66",
+  track: "rgba(51, 255, 102, 0.12)",
+  r: 0.4,
+  lw: 0.05,
+  tip: null,
+  glow: true,
+};
 
 function themeConfig() {
   return THEMES[document.documentElement.dataset.theme] || THEMES.studio;
