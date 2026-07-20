@@ -28,6 +28,14 @@ THEMES.porcelain = {
   tip: "#16181d",
   glow: false,
 };
+THEMES.nord = {
+  accent: "#88c0d0",
+  track: "rgba(216, 222, 233, 0.12)",
+  r: 0.4,
+  lw: 0.06,
+  tip: "#eceff4",
+  glow: false,
+};
 
 function themeConfig() {
   return THEMES[document.documentElement.dataset.theme] || THEMES.studio;
