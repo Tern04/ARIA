@@ -92,6 +92,11 @@
   border-radius: 0 0 7px 7px;
 }
 
+#autostart-toggle:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* ── window move/resize grips, visible only in edit mode ────
    Like widget editing, they need the window interactive (Alt). */
 

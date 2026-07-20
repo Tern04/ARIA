@@ -1748,8 +1748,19 @@ function initDisplayMenu() {
   const autoBtn = document.getElementById("autostart-toggle");
   // No bundler, so no plugin guest JS — call the plugin commands directly.
   const autostart = (cmd) => window.__TAURI__.core.invoke(`plugin:autostart|${cmd}`);
+  // The plugin registers the *running* exe. In dev that is the debug build,
+  // which loads its UI from the tauri-dev server — at login there is no
+  // server, so the window would come up as a WebView2 connection error
+  // (plus a console window). Dev pages are served from a ported origin;
+  // the installed app runs from tauri.localhost with no port.
+  const devBuild = location.port !== "";
+  if (devBuild) {
+    autoBtn.disabled = true;
+    autoBtn.title = "available in the installed app (a dev build would fail at login)";
+  }
 
   async function toggleAutostart() {
+    if (devBuild) return;
     try {
       const on = await autostart("is_enabled");
       await autostart(on ? "disable" : "enable");
