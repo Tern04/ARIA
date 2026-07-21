@@ -19,6 +19,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const POPULARITY_TICK: Duration = Duration::from_secs(60);
 const BACKOFF_MIN: Duration = Duration::from_secs(2);
 const BACKOFF_MAX: Duration = Duration::from_secs(60);
+// How long a non-auth outage may last before the widget admits "not
+// connected". Brief gateway drops reconnect within a couple of backoff
+// cycles, so keep the last-good board on screen instead of flashing.
+const DISCONNECT_GRACE: Duration = Duration::from_secs(30);
 
 /// Bumped by discord_setup so the collector re-attempts immediately even if
 /// the user re-submits credentials identical to ones that already failed.
@@ -137,6 +141,8 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
         let _ = ready.wait_for(|r| *r).await;
         let mut last: Option<DiscordState> = None;
         let mut backoff = BACKOFF_MIN;
+        // When the current non-auth outage began; None while healthy.
+        let mut down_since: Option<std::time::Instant> = None;
         loop {
             let (token, cfg) = match credentials(&app) {
                 Ok(v) => v,
@@ -156,23 +162,35 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
             let _ = tokio::time::timeout(Duration::from_millis(1), RECONFIG.notified()).await;
 
             let started = std::time::Instant::now();
-            let (reason, needs_setup) = session(&app, &token, &cfg, &mut last).await;
+            let mut connected = false;
+            let (reason, needs_setup) =
+                session(&app, &token, &cfg, &mut last, &mut connected).await;
             if reason == "reconfiguring" {
                 // discord_setup / discord_logout already emitted the right
                 // state; jump straight to reloading credentials.
                 last = None;
+                down_since = None;
                 continue;
             }
-            emit_changed(
-                &app,
-                &mut last,
-                DiscordState::Disconnected { reason, needs_setup },
-            );
+
+            // This round actually loaded guilds, so the outage (if any) is
+            // over. Measured per-round, not from `last`, which stays Connected
+            // while we hold the board through a brief outage.
+            if connected {
+                down_since = None;
+            }
 
             if needs_setup {
-                // Auth-shaped failure: re-identifying with the same
-                // credentials cannot succeed, so wait until they change
-                // (or the user re-submits the setup form).
+                // Auth-shaped failure (bad token, missing intents): surface it
+                // right away — retrying with the same credentials can't help.
+                down_since = None;
+                emit_changed(
+                    &app,
+                    &mut last,
+                    DiscordState::Disconnected { reason, needs_setup },
+                );
+                // Wait until credentials change (or the user re-submits the
+                // setup form).
                 let failed = (token, cfg.guild_ids);
                 let gen0 = SETUP_GEN.load(Ordering::Relaxed);
                 loop {
@@ -190,6 +208,18 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
                 }
                 backoff = BACKOFF_MIN;
                 continue;
+            }
+
+            // Transient drop (network blip, gateway asked us to reconnect).
+            // Keep the last-good board on screen and reconnect quietly; only
+            // admit "not connected" once the outage outlasts the grace window.
+            let since = *down_since.get_or_insert(started);
+            if since.elapsed() > DISCONNECT_GRACE {
+                emit_changed(
+                    &app,
+                    &mut last,
+                    DiscordState::Disconnected { reason, needs_setup },
+                );
             }
 
             // A session that held for a while means the credentials are fine
@@ -220,6 +250,7 @@ async fn session(
     token: &str,
     cfg: &DiscordConfig,
     last: &mut Option<DiscordState>,
+    connected: &mut bool,
 ) -> (String, bool) {
     let ws = match tokio::time::timeout(CONNECT_TIMEOUT, connect_async(GATEWAY)).await {
         Ok(Ok((ws, _))) => ws,
@@ -287,8 +318,11 @@ async fn session(
                 }
             }
             _ = sampler.tick() => {
-                if set.any_loaded() && sample_popularity(app, &mut set) {
-                    emit_changed(app, last, build_state(&set, cfg));
+                if set.any_loaded() {
+                    *connected = true;
+                    if sample_popularity(app, &mut set) {
+                        emit_changed(app, last, build_state(&set, cfg));
+                    }
                 }
             }
             _ = RECONFIG.notified() => {
@@ -310,6 +344,7 @@ async fn session(
                                 return e;
                             }
                             if set.any_loaded() {
+                                *connected = true;
                                 emit_changed(app, last, build_state(&set, cfg));
                             }
                         }

@@ -86,10 +86,26 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
                 return;
             }
         };
+        let mut last_ok: Option<StagState> = None;
         loop {
-            let state = poll(&client)
-                .await
-                .unwrap_or_else(|reason| StagState::Disconnected { reason });
+            let state = match poll(&client).await {
+                Ok(s) => {
+                    last_ok = Some(s.clone());
+                    s
+                }
+                // A missing/expired CAS ticket is a real disconnect; anything
+                // else (network blip, STAG 5xx, timeout) is transient — keep
+                // showing the last good timetable instead of flashing "not
+                // connected" for up to 15 minutes until the next poll.
+                Err(reason) if is_auth_error(&reason) => {
+                    last_ok = None;
+                    StagState::Disconnected { reason }
+                }
+                Err(reason) => match &last_ok {
+                    Some(s) => s.clone(),
+                    None => StagState::Disconnected { reason },
+                },
+            };
             let connected = matches!(state, StagState::Connected { .. });
             if let Err(e) = app.emit("stag", state) {
                 eprintln!("stag emit failed: {e}");
@@ -108,6 +124,14 @@ static REFRESH: tokio::sync::Notify = tokio::sync::Notify::const_new();
 #[tauri::command]
 pub fn stag_refresh() {
     REFRESH.notify_one();
+}
+
+/// Errors that mean the ticket itself is bad, so retrying can't help and the
+/// widget should show a real "not connected" (no ticket, or an expired one —
+/// the sentinels from `get`/`student_number` end in "reconnect"). Everything
+/// else (network blip, STAG 5xx, timeout) is treated as transient.
+fn is_auth_error(reason: &str) -> bool {
+    reason == "not connected" || reason.contains("reconnect")
 }
 
 async fn poll(client: &reqwest::Client) -> Result<StagState, String> {

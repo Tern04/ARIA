@@ -65,10 +65,26 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
                 return;
             }
         };
+        let mut last_ok: Option<GithubState> = None;
         loop {
-            let state = poll(&client)
-                .await
-                .unwrap_or_else(|reason| GithubState::Disconnected { reason });
+            let state = match poll(&client).await {
+                Ok(s) => {
+                    last_ok = Some(s.clone());
+                    s
+                }
+                // A missing/revoked token is a real disconnect the user must
+                // fix; anything else (network blip, GitHub 5xx, timeout) is
+                // transient — keep showing the last good data instead of
+                // wiping the widget to "not connected" until the next poll.
+                Err(reason) if is_auth_error(&reason) => {
+                    last_ok = None;
+                    GithubState::Disconnected { reason }
+                }
+                Err(reason) => match &last_ok {
+                    Some(s) => s.clone(),
+                    None => GithubState::Disconnected { reason },
+                },
+            };
             if let Err(e) = app.emit("github", state) {
                 eprintln!("github emit failed: {e}");
             }
@@ -78,6 +94,13 @@ pub fn spawn(app: AppHandle, mut ready: tokio::sync::watch::Receiver<bool>) {
             }
         }
     });
+}
+
+/// Errors that mean the credential itself is bad, so retrying with it can't
+/// help and the widget should show a real "not connected" (no token, or a
+/// revoked/expired PAT → 401). Everything else is treated as transient.
+fn is_auth_error(reason: &str) -> bool {
+    reason == "not connected" || reason.contains("401")
 }
 
 async fn poll(client: &reqwest::Client) -> Result<GithubState, String> {
