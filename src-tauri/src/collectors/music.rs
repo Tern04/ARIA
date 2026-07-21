@@ -205,7 +205,14 @@ fn sample_music() -> MusicState {
                         // UniversalTime: 100 ns ticks since 1601-01-01 UTC.
                         const UNIX_EPOCH_1601: i64 = 116_444_736_000_000_000;
                         let now = UNIX_EPOCH_1601 + (since_unix.as_nanos() / 100) as i64;
-                        pos += (now - updated.UniversalTime).max(0);
+                        // Extrapolation only bridges the ~10 s poll gap. Some
+                        // sources set LastUpdatedTime once at play and never
+                        // refresh Position, so an unbounded (now - updated)
+                        // stacks across a whole shuffle session — the next
+                        // track shows 67:24 / 71:02 instead of its own length.
+                        // Cap the drift just past one poll interval.
+                        const MAX_DRIFT: i64 = 15 * 10_000_000; // 15 s in ticks
+                        pos += (now - updated.UniversalTime).clamp(0, MAX_DRIFT);
                     }
                 }
                 if end > 0 {
