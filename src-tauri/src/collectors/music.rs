@@ -195,8 +195,16 @@ fn sample_music() -> MusicState {
         let (position_secs, duration_secs) = session
             .GetTimelineProperties()
             .map(|t| {
-                let mut pos = t.Position().map(|p| p.Duration).unwrap_or(0);
-                let end = t.EndTime().map(|e| e.Duration).unwrap_or(0);
+                // Apple Music reports Position/EndTime against a running
+                // *session* timeline, not the current track: StartTime is the
+                // cumulative offset where this track begins. Spotify, Opera and
+                // the browsers leave StartTime at 0, so they worked; Apple Music
+                // did not — ignoring StartTime showed the running session total
+                // (67:24 / 71:02) that never reset between tracks. Rebase both
+                // values onto StartTime so the bar is per-track.
+                let start = t.StartTime().map(|s| s.Duration).unwrap_or(0);
+                let mut pos = t.Position().map(|p| p.Duration).unwrap_or(0) - start;
+                let end = t.EndTime().map(|e| e.Duration).unwrap_or(0) - start;
                 if status == Status::Playing {
                     if let (Ok(updated), Ok(since_unix)) = (
                         t.LastUpdatedTime(),
@@ -207,10 +215,8 @@ fn sample_music() -> MusicState {
                         let now = UNIX_EPOCH_1601 + (since_unix.as_nanos() / 100) as i64;
                         // Extrapolation only bridges the ~10 s poll gap. Some
                         // sources set LastUpdatedTime once at play and never
-                        // refresh Position, so an unbounded (now - updated)
-                        // stacks across a whole shuffle session — the next
-                        // track shows 67:24 / 71:02 instead of its own length.
-                        // Cap the drift just past one poll interval.
+                        // refresh Position, so cap the drift just past one poll
+                        // interval instead of letting it stack.
                         const MAX_DRIFT: i64 = 15 * 10_000_000; // 15 s in ticks
                         pos += (now - updated.UniversalTime).clamp(0, MAX_DRIFT);
                     }
@@ -317,7 +323,7 @@ fn thumbnail_data_url(
 }
 
 /// Plain base64 (RFC 4648) — small enough not to warrant a dependency.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn base64(data: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -410,13 +416,13 @@ end tell"#;
     match (lines.next(), lines.next(), lines.next()) {
         (Some(state @ ("playing" | "paused")), Some(title), Some(artist)) if !title.is_empty() => {
             let now = NowPlaying {
-                title: title.to_string(),
-                artist: artist.to_string(),
                 album: lines.next().unwrap_or("").to_string(),
                 app_name: Some("Music".into()),
                 position_secs: lines.next().and_then(|s| s.parse().ok()).unwrap_or(0),
                 duration_secs: lines.next().and_then(|s| s.parse().ok()).unwrap_or(0),
-                art: None,
+                art: artwork_data_url(title, artist),
+                title: title.to_string(),
+                artist: artist.to_string(),
             };
             if state == "playing" {
                 MusicState::Playing(now)
@@ -426,6 +432,69 @@ end tell"#;
         }
         _ => MusicState::Stopped,
     }
+}
+
+/// Current track's album art as a data: URL. AppleScript can't hand raw image
+/// bytes back through stdout intact, so it writes them to a temp file we read
+/// and encode. Cached per track — the poll runs every 10 s and the art is by
+/// far the heaviest field.
+#[cfg(target_os = "macos")]
+fn artwork_data_url(title: &str, artist: &str) -> Option<String> {
+    use std::sync::Mutex;
+
+    static CACHE: Mutex<Option<((String, String), Option<String>)>> = Mutex::new(None);
+    let key = (title.to_string(), artist.to_string());
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((k, art)) = cache.as_ref() {
+            if *k == key {
+                return art.clone();
+            }
+        }
+    }
+
+    let art = read_artwork();
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((key, art.clone()));
+    }
+    art
+}
+
+#[cfg(target_os = "macos")]
+fn read_artwork() -> Option<String> {
+    let mut path = std::env::temp_dir();
+    path.push("aria-music-art.tmp");
+    let posix = path.to_str()?;
+    // temp_dir is ours, so the path has no quotes to escape out of the literal.
+    let script = format!(
+        r#"tell application "Music"
+    if player state is stopped then return ""
+    if (count of artworks of current track) is 0 then return ""
+    set d to raw data of artwork 1 of current track
+end tell
+try
+    set fh to open for access (POSIX file "{posix}") with write permission
+    set eof fh to 0
+    write d to fh
+    close access fh
+on error
+    try
+        close access (POSIX file "{posix}")
+    end try
+    return ""
+end try
+return "ok""#
+    );
+    if run_osascript(&script).ok()? != "ok" {
+        return None;
+    }
+    let bytes = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    if bytes.is_empty() || bytes.len() > 3_000_000 {
+        return None; // absent or unreasonably large
+    }
+    // Apple stores PNG or JPEG artwork; sniff the magic bytes for the mime.
+    let mime = if bytes.starts_with(b"\x89PNG") { "image/png" } else { "image/jpeg" };
+    Some(format!("data:{mime};base64,{}", base64(&bytes)))
 }
 
 #[cfg(target_os = "macos")]
