@@ -40,7 +40,10 @@ pub fn run() {
             collectors::github::github_setup,
             collectors::github::github_logout,
             collectors::email::mail_add_account,
-            collectors::email::mail_remove_account
+            collectors::email::mail_remove_account,
+            collectors::calendar::cal_add_feed,
+            collectors::calendar::cal_remove_feed,
+            collectors::calendar::cal_refresh
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

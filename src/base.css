@@ -1045,3 +1045,169 @@ body.editing .w-controls {
   font-size: 0.68rem;
   letter-spacing: 0.06em;
 }
+
+/* ── calendar widget ────────────────────────────────────────
+   Structural only (layout, sizing); colours ride on currentColor
+   and opacity so every theme styles it for free. Feed dots use a
+   fixed categorical palette that reads on light and dark alike.
+   Labels and day separators reuse .stag-section (themed already). */
+
+.cal-agenda {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cal-day-sep {
+  margin-top: 6px;
+  font: 600 0.62rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.55;
+}
+.cal-day-sep:first-child { margin-top: 0; }
+
+.cal-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 400 0.74rem/1.4 "Inter", system-ui, sans-serif;
+}
+
+.cal-when {
+  flex: 0 0 auto;
+  min-width: 3.4em;
+  font: 500 0.72rem/1.4 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+
+.cal-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cal-loc {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.5;
+  font-size: 0.68rem;
+}
+
+.cal-empty {
+  font: 400 0.78rem/1.4 "Inter", system-ui, sans-serif;
+  opacity: 0.45;
+}
+
+/* Feed colour dots — fixed palette, index taken modulo 6 in JS. */
+.cal-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  align-self: center;
+  background: var(--cal-dot, #4c9aff);
+}
+.cal-dot--0 { --cal-dot: #4c9aff; }
+.cal-dot--1 { --cal-dot: #f2704e; }
+.cal-dot--2 { --cal-dot: #4fc08d; }
+.cal-dot--3 { --cal-dot: #c07ee6; }
+.cal-dot--4 { --cal-dot: #e0b93a; }
+.cal-dot--5 { --cal-dot: #e05a7d; }
+
+/* Small size: today's headline + the next event. */
+.cal-s-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.cal-s-date {
+  font: 600 0.9rem/1.2 "JetBrains Mono", ui-monospace, monospace;
+}
+.cal-s-count {
+  font: 500 0.72rem/1.2 "Inter", system-ui, sans-serif;
+  opacity: 0.6;
+}
+.cal-s-next {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 400 0.76rem/1.4 "Inter", system-ui, sans-serif;
+}
+
+/* Large size: month grid | agenda. */
+.cal-l {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  gap: 0 18px;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.cal-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+
+.cal-month {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.cal-month-title {
+  font: 600 0.72rem/1 "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+.cal-month-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.cal-month-dow {
+  text-align: center;
+  font: 500 0.58rem/1.6 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.4;
+}
+.cal-month-day {
+  position: relative;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font: 500 0.66rem/1 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.75;
+}
+/* a dot under days that have events */
+.cal-month-day--has::after {
+  content: "";
+  position: absolute;
+  bottom: 2px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.cal-month-day--today {
+  outline: 1px solid currentColor;
+  opacity: 1;
+}
+
+/* s-size hides the agenda and month grid, keeping only the headline. */
+.widget[data-size="s"] .cal-agenda,
+.widget[data-size="s"] .cal-l {
+  display: none;
+}
+
+.widget--calendar[data-size="s"] .widget-body {
+  gap: 6px;
+  justify-content: center;
+}

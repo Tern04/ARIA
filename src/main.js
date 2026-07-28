@@ -435,6 +435,29 @@ let githubLastJson = null;
 let emailData = null;
 let emailLastJson = null;
 let stagData = null;
+let calData = null;
+let calLastJson = null;
+
+// Number of feed colours defined in CSS (.cal-dot--0 … --N-1); the collector's
+// color index is taken modulo this.
+const CAL_COLORS = 6;
+
+function calFeedForm(err) {
+  const form = document.createElement("div");
+  form.className = "auth-form";
+  const label = authInput("label (e.g. FAMILY)");
+  const url = authInput("secret iCal URL", "password");
+  const btn = authButton("ADD CALENDAR", async (b) => {
+    const ok = await invokeAuth(b, err, "cal_add_feed", {
+      label: label.value,
+      url: url.value,
+    });
+    // The command refetches before resolving, so reopening shows the new feed.
+    if (ok && authPanelId === "calendar") openAuthPanel("calendar");
+  });
+  form.append(label, url, btn);
+  return form;
+}
 
 function mailAccountForm(err) {
   const form = document.createElement("div");
@@ -462,9 +485,13 @@ function closeAuthPanel() {
   const id = authPanelId;
   authPanelId = null;
   if (!id) return;
-  ({ discord: renderDiscord, github: renderGithub, email: renderEmail, stag: renderStag })[
-    id
-  ]?.();
+  ({
+    discord: renderDiscord,
+    github: renderGithub,
+    email: renderEmail,
+    stag: renderStag,
+    calendar: renderCalendar,
+  })[id]?.();
 }
 
 // The edit-mode gear opens this: a log-out/reconfigure panel in the widget
@@ -604,6 +631,42 @@ function openAuthPanel(id) {
       list.append(row);
     }
     panel.append(list, mailAccountForm(err));
+  } else if (id === "calendar") {
+    const list = document.createElement("div");
+    list.className = "acct-list";
+    for (const feed of calData?.status === "connected" ? calData.feeds : []) {
+      const row = document.createElement("div");
+      row.className = "acct-row";
+      const dot = document.createElement("span");
+      dot.className = `cal-dot cal-dot--${feed.color % CAL_COLORS}`;
+      const name = document.createElement("span");
+      name.className = "acct-name";
+      name.textContent = feed.label;
+      const status = document.createElement("span");
+      status.className = "acct-user";
+      status.textContent = feed.ok ? "" : "error";
+      const del = document.createElement("button");
+      del.className = "w-btn";
+      del.textContent = "×";
+      del.title = "Remove calendar";
+      del.addEventListener("click", async () => {
+        del.disabled = true;
+        try {
+          await window.__TAURI__.core.invoke("cal_remove_feed", { label: feed.label });
+          if (authPanelId === "calendar") openAuthPanel("calendar");
+        } catch (e) {
+          err.textContent = String(e);
+          del.disabled = false;
+        }
+      });
+      row.append(dot, name, status, del);
+      list.append(row);
+    }
+    panel.append(list, calFeedForm(err));
+    const note = document.createElement("span");
+    note.className = "auth-note";
+    note.textContent = "Google Calendar → Settings → Integrate calendar → Secret address in iCal format";
+    panel.append(note);
   }
 
   panel.append(err);
@@ -1121,6 +1184,15 @@ async function initCollectors() {
     renderStag();
   });
 
+  on("calendar", (e) => {
+    setStatus("status-cal", e.payload.status === "connected");
+    const raw = JSON.stringify(e.payload);
+    if (raw === calLastJson) return; // don't wipe the feed form mid-typing
+    calLastJson = raw;
+    calData = e.payload;
+    renderCalendar();
+  });
+
   await Promise.all(pending);
 }
 
@@ -1249,6 +1321,167 @@ function renderStag() {
   }
 }
 
+// Group a flat, time-sorted event list into day sections. Each section gets a
+// faint day header; rows then only carry the time, so the eye reads down a day
+// at a glance.
+function buildAgenda(events, limit) {
+  const list = document.createElement("div");
+  list.className = "cal-agenda fill-list";
+  if (events.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "cal-empty";
+    empty.textContent = "nothing scheduled";
+    list.append(empty);
+    return list;
+  }
+  let lastDay = null;
+  for (const e of events.slice(0, limit)) {
+    if (e.day_key !== lastDay) {
+      lastDay = e.day_key;
+      const sep = document.createElement("div");
+      sep.className = "cal-day-sep";
+      sep.textContent = e.day_label;
+      list.append(sep);
+    }
+    const row = document.createElement("div");
+    row.className = "cal-row";
+    const when = document.createElement("span");
+    when.className = "cal-when";
+    when.textContent = e.all_day ? "all day" : e.time_label;
+    const dot = document.createElement("span");
+    dot.className = `cal-dot cal-dot--${e.color % CAL_COLORS}`;
+    dot.title = e.feed;
+    const title = document.createElement("span");
+    title.className = "cal-title";
+    title.textContent = e.title;
+    row.append(when, dot, title);
+    if (e.location) {
+      const loc = document.createElement("span");
+      loc.className = "cal-loc";
+      loc.textContent = e.location;
+      row.append(loc);
+    }
+    row.title = `${e.day_label}${e.time_label ? " " + e.time_label : ""} · ${e.title}${e.location ? " · " + e.location : ""}`;
+    list.append(row);
+  }
+  return list;
+}
+
+// Current-month grid, Monday-first, with a dot on every day that has events
+// and today ringed. Feeds the large size's left column.
+function calMonthGrid(dayCounts) {
+  const counts = new Map(dayCounts.map((d) => [d.date, d.count]));
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const grid = document.createElement("div");
+  grid.className = "cal-month";
+  const title = document.createElement("div");
+  title.className = "cal-month-title";
+  title.textContent = now.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  grid.append(title);
+  const cells = document.createElement("div");
+  cells.className = "cal-month-grid";
+  for (const d of ["M", "T", "W", "T", "F", "S", "S"]) {
+    const h = document.createElement("span");
+    h.className = "cal-month-dow";
+    h.textContent = d;
+    cells.append(h);
+  }
+  // Monday-based leading offset for the 1st of the month.
+  const lead = (new Date(year, month, 1).getDay() + 6) % 7;
+  for (let i = 0; i < lead; i++) cells.append(document.createElement("span"));
+  const days = new Date(year, month + 1, 0).getDate();
+  for (let d = 1; d <= days; d++) {
+    const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const cell = document.createElement("span");
+    cell.className = "cal-month-day";
+    if (d === now.getDate()) cell.classList.add("cal-month-day--today");
+    if (counts.has(key)) cell.classList.add("cal-month-day--has");
+    cell.textContent = d;
+    cells.append(cell);
+  }
+  grid.append(cells);
+  return grid;
+}
+
+function renderCalendar() {
+  if (authPanelId === "calendar") return;
+  const body = document.querySelector("#widget-calendar .widget-body");
+  if (!calData) return;
+  const p = calData;
+  body.replaceChildren();
+
+  if (p.status !== "connected") {
+    const span = document.createElement("span");
+    span.className = "disconnected";
+    span.textContent = p.reason;
+    const err = document.createElement("span");
+    err.className = "disconnected";
+    body.append(span, calFeedForm(err), err);
+    return;
+  }
+
+  const size = document.getElementById("widget-calendar").dataset.size;
+  const events = p.events ?? [];
+
+  // Small: today's headline and the next thing coming up.
+  if (size === "s") {
+    const head = document.createElement("div");
+    head.className = "cal-s-head";
+    const date = document.createElement("span");
+    date.className = "cal-s-date";
+    date.textContent = new Date().toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+    const count = document.createElement("span");
+    count.className = "cal-s-count";
+    count.textContent = p.today_count === 1 ? "1 today" : `${p.today_count} today`;
+    head.append(date, count);
+    body.append(head);
+    const next = events[0];
+    if (next) {
+      const row = document.createElement("div");
+      row.className = "cal-s-next";
+      const when = document.createElement("span");
+      when.className = "cal-when";
+      when.textContent = `${next.day_label}${next.time_label ? " " + next.time_label : ""}`;
+      const dot = document.createElement("span");
+      dot.className = `cal-dot cal-dot--${next.color % CAL_COLORS}`;
+      const title = document.createElement("span");
+      title.className = "cal-title";
+      title.textContent = next.title;
+      row.append(when, dot, title);
+      body.append(row);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "cal-empty";
+      empty.textContent = "nothing scheduled";
+      body.append(empty);
+    }
+    return;
+  }
+
+  // Large: month grid beside a taller agenda.
+  if (size === "l") {
+    const wrap = document.createElement("div");
+    wrap.className = "cal-l";
+    const left = document.createElement("div");
+    left.className = "cal-col";
+    left.append(calMonthGrid(p.day_counts ?? []));
+    const right = document.createElement("div");
+    right.className = "cal-col";
+    const label = document.createElement("div");
+    label.className = "stag-section";
+    label.textContent = "UPCOMING";
+    right.append(label, buildAgenda(events, 40));
+    wrap.append(left, right);
+    body.append(wrap);
+    return;
+  }
+
+  // Medium: just the agenda.
+  body.append(buildAgenda(events, 40));
+}
+
 async function initMusicControls() {
   setInterval(updateMusicProgress, 1000);
   const controls = document.getElementById("music-controls");
@@ -1321,6 +1554,9 @@ const WIDGETS = {
   discord:    { sizes: { s: [4, 1], m: [4, 2], l: [5, 3] }, home: [1, 5, "m"] },
   stag:       { sizes: { s: [5, 2], m: [5, 4], l: [8, 4] }, home: [5, 1, "m"] },
   email:      { sizes: { s: [5, 1], m: [5, 2], l: [5, 4] }, home: [5, 5, "m"] },
+  // The default board fills the 12×6 grid, so calendar starts in the tray;
+  // drag it in (or shrink another widget) to place it.
+  calendar:   { sizes: { s: [4, 1], m: [4, 2], l: [6, 4] }, home: [1, 1, "m"], defaultHidden: true },
   github:     { sizes: { s: [3, 1], m: [3, 2], l: [5, 3] }, home: [10, 1, "m"] },
   crypto:     { sizes: { s: [3, 1], m: [3, 2], l: [5, 2] }, home: [10, 3, "m"] },
   screentime: { sizes: { s: [3, 1], m: [3, 2], l: [3, 3] }, home: [10, 5, "m"] },
@@ -1332,7 +1568,7 @@ normalizeLayout();
 function defaultLayout() {
   const l = {};
   for (const [id, w] of Object.entries(WIDGETS)) {
-    l[id] = { c: w.home[0], r: w.home[1], size: w.home[2], hidden: false };
+    l[id] = { c: w.home[0], r: w.home[1], size: w.home[2], hidden: !!w.defaultHidden };
   }
   return l;
 }
@@ -1449,6 +1685,7 @@ function applyLayout() {
   renderStag();
   renderScreentime();
   renderMusic();
+  renderCalendar();
 }
 
 function showWidget(id) {
@@ -1538,9 +1775,9 @@ function initLayout() {
   const tray = document.getElementById("widget-tray");
 
   // Widgets with an account get a gear that opens their log-in/out panel.
-  const AUTH_WIDGETS = new Set(["discord", "github", "email", "stag"]);
+  const AUTH_WIDGETS = new Set(["discord", "github", "email", "stag", "calendar"]);
   // Slow-polling collectors get a poll-now button.
-  const REFRESH_WIDGETS = { email: "email_refresh", github: "github_refresh", crypto: "crypto_refresh", stag: "stag_refresh" };
+  const REFRESH_WIDGETS = { email: "email_refresh", github: "github_refresh", crypto: "crypto_refresh", stag: "stag_refresh", calendar: "cal_refresh" };
 
   for (const id of Object.keys(WIDGETS)) {
     const el = widgetEl(id);

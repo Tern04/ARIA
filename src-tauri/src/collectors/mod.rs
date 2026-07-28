@@ -1,3 +1,4 @@
+pub mod calendar;
 pub mod crypto;
 pub mod discord;
 pub mod email;
@@ -207,5 +208,6 @@ pub fn spawn_all(app: &AppHandle) {
     crypto::spawn(app.clone(), rx.clone());
     discord::spawn(app.clone(), rx.clone());
     email::spawn(app.clone(), rx.clone());
+    calendar::spawn(app.clone(), rx.clone());
     stag::spawn(app.clone(), rx);
 }
