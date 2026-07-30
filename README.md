@@ -8,12 +8,12 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 
 | Widget | Data | Source |
 |---|---|---|
-| SYSTEM | CPU / RAM / GPU gauges, animated | `sysinfo`; GPU via `powermetrics` (Apple Silicon) |
+| SYSTEM | CPU / RAM / GPU gauges, animated | `sysinfo`; GPU via `powermetrics` (Apple Silicon), PDH counters (Windows), `nvidia-smi` (Linux) |
 | STAG / ZČU | Weekly timetable grid + course list with credits | STAG REST API (`stag-ws.zcu.cz`), CAS browser login |
 | GITHUB | Notifications, open PRs, last-pushed repo, contribution wall | GitHub REST + GraphQL, personal access token |
 | MAIL | Multi-account unread counts + recent messages, per-account filter | IMAP (read-only, never marks as seen) |
 | CRYPTO | BTC/ETH price, change + sparkline over 1D / 1M / 1Y | CoinGecko (free, no key) |
-| NOW PLAYING | Track info, transport controls, playlist shuffle chips | Apple Music (macOS) |
+| NOW PLAYING | Track info, transport controls, playlist shuffle chips | Apple Music (macOS), SMTC (Windows), MPRIS (Linux) |
 | SCREEN TIME | Daily total + top apps by foreground time | Local tracking, idle-aware |
 | DISCORD | Voice channels across one or more servers, sorted by how much your group actually uses them (person-minutes tracked locally), who's in them (mute/deafen/streaming), plus online status and current game/song of picked friends | Discord Gateway, own bot token |
 
@@ -70,9 +70,15 @@ Fully implemented, pending verification on real hardware (developed and type-che
 
 If something misbehaves, it will be one of these — issues welcome.
 
-### Linux (Pop!_OS / GNOME targeted)
+### Linux (Pop!_OS / COSMIC + GNOME)
 
-Cross-platform widgets work; the desktop layer (`_NET_WM_WINDOW_TYPE_DESKTOP`), screen time, MPRIS media and GPU gauge are pending. Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
+Cross-platform widgets work, plus:
+
+- **GPU gauge** via `nvidia-smi` (NVIDIA cards; the gauge stays blank on other GPUs).
+- **NOW PLAYING** over MPRIS via `playerctl` — covers Spotify, VLC and any browser tab exposing a media session; transport buttons work, playlist chips are Apple-Music-only and don't render. Cover art is inlined (the CSP forbids remote images): Chromium-based browsers publish a local cover and Spotify an `https` one, so they show artwork and the real title; Firefox exposes very little for some sites (e.g. Netflix shows only "Netflix", no art). Needs `playerctl` installed.
+- **SCREEN TIME** via a small Wayland client — the focused window from COSMIC's `zcosmic-toplevel-info` and idle from `ext-idle-notify`. COSMIC-specific for now (no active-window/idle path exists on plain GNOME/Wayland); the tracker simply records nothing elsewhere. Protocol bindings are generated from vendored, permissively-licensed XML in `src-tauri/protocols/`, so no GPL cosmic crate is pulled into this MIT project.
+
+Still pending: the desktop layer (`_NET_WM_WINDOW_TYPE_DESKTOP`) — the window currently sits as a normal, opaque window (see the WebKitGTK/NVIDIA note in the repo). Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
 
 ## Connecting the services
 
