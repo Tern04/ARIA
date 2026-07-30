@@ -179,7 +179,64 @@ fn sample_gpu_pdh(
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Linux GPU utilization via `nvidia-smi`. Desktop NVIDIA is the common case
+/// here; other vendors would need a sysfs/`radeontop` path, so when the tool is
+/// absent (non-NVIDIA machine, driver missing) we back off and leave the gauge
+/// blank rather than spamming — same visible result as the old no-op stub.
+#[cfg(target_os = "linux")]
+fn spawn_gpu(app: AppHandle) {
+    const GPU_POLL: Duration = Duration::from_secs(5);
+    const BACKOFF: Duration = Duration::from_secs(120);
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match tauri::async_runtime::spawn_blocking(sample_gpu_nvidia).await {
+                Ok(Ok(gpu)) => {
+                    if let Err(e) = app.emit("gpu", GpuStats { gpu }) {
+                        eprintln!("gpu emit failed: {e}");
+                    }
+                    tokio::time::sleep(GPU_POLL).await;
+                }
+                Ok(Err(e)) => {
+                    eprintln!("gpu sample failed: {e}");
+                    tokio::time::sleep(BACKOFF).await;
+                }
+                Err(e) => {
+                    eprintln!("gpu task failed: {e}");
+                    tokio::time::sleep(BACKOFF).await;
+                }
+            }
+        }
+    });
+}
+
+/// First GPU's utilization percentage from `nvidia-smi`. Multi-GPU rigs report
+/// one line per card; the first is the primary and enough for a single gauge.
+#[cfg(target_os = "linux")]
+fn sample_gpu_nvidia() -> Result<f32, String> {
+    let out = std::process::Command::new("nvidia-smi")
+        .args([
+            "--query-gpu=utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(format!(
+            "nvidia-smi exited with {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .next()
+        .and_then(|l| l.trim().parse::<f32>().ok())
+        .map(|v| v.clamp(0.0, 100.0))
+        .ok_or_else(|| "no utilization value in nvidia-smi output".into())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn spawn_gpu(_app: AppHandle) {}
 
 #[cfg(target_os = "macos")]
