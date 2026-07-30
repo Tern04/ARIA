@@ -5,6 +5,24 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // On the NVIDIA proprietary driver under a Wayland compositor, this
+    // transparent window mispresents damaged regions (widget updates, hover) as
+    // opaque black. These env vars work around the two known culprits — the
+    // DMABUF renderer path and NVIDIA explicit sync (buffers scanned out before
+    // the render completes). They must be set before the webview (GTK)
+    // initializes. Each is only set if not already provided, so a launch can
+    // override any of them for debugging.
+    #[cfg(target_os = "linux")]
+    {
+        let set_default = |k: &str, v: &str| {
+            if std::env::var_os(k).is_none() {
+                std::env::set_var(k, v);
+            }
+        };
+        set_default("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        set_default("__NV_DISABLE_EXPLICIT_SYNC", "1");
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -17,11 +35,14 @@ pub fn run() {
                 .expect("main window missing from config");
             window::set_desktop_layer(&main);
             window::spawn_interactivity_watch(main.clone());
+            window::spawn_wallpaper_watch(main.clone());
             collectors::spawn_all(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             window::set_overlay,
+            window::desktop_background,
+            window::display_server,
             collectors::frontend_ready,
             collectors::music::music_control,
             collectors::music::music_playlists,

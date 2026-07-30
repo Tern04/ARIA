@@ -17,3 +17,8 @@ secrets.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Local-only (never push)
+CLAUDE.md
+aria-render-test.sh
+.claude/settings.local.json

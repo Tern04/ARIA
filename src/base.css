@@ -1211,3 +1211,45 @@ body.editing .w-controls {
   gap: 6px;
   justify-content: center;
 }
+
+/* ── Linux/WebKitGTK transparency fix ───────────────────────
+   On a transparent WebView, WebKitGTK paints backdrop-filter regions opaque
+   black on repaint (hover, live updates), so glass panels flash black. The
+   filter can't sample the desktop behind an OS-transparent window anyway, so
+   it contributes nothing here — drop it on Linux across all themes. The
+   semi-transparent panel backgrounds keep the glass look. (main.js adds
+   .is-linux to <html>.) */
+html.is-linux *,
+html.is-linux *::before,
+html.is-linux *::after {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Opaque background so no region of the window is see-through (that is what
+   WebKitGTK+NVIDIA renders as black garbage). The solid colour is the fallback
+   when the wallpaper can't be resolved; the body stays transparent (see each
+   theme) so this shows through behind the glass panels. */
+html.is-linux {
+  background-color: #0a0c11;
+}
+
+/* The wallpaper underlay. It is sized to the whole monitor and shifted by the
+   window's offset within that monitor (--desktop-bg-* set from JS), so it is an
+   exact continuation of the real desktop showing around the window — the seams
+   at the window border and the panel strip disappear. When JS can't learn the
+   window's position (Wayland), the defaults cover-fit the viewport instead. */
+html.is-linux::before {
+  content: "";
+  position: fixed;
+  left: var(--desktop-bg-x, 0);
+  top: var(--desktop-bg-y, 0);
+  width: var(--desktop-bg-w, 100vw);
+  height: var(--desktop-bg-h, 100vh);
+  background-image: var(--desktop-bg, none);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  z-index: -1;
+  pointer-events: none;
+}

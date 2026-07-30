@@ -33,6 +33,9 @@ native-tls = "0.2"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 rfc2047-decoder = "1"
 chrono = "0.4"
+# Linux only: encode the desktop wallpaper as a data: URI for the opaque-window
+# transparency workaround (see window::desktop_background).
+base64 = "0.22"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = [

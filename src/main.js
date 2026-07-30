@@ -2119,6 +2119,65 @@ function initWindowStateSaver() {
   win.onResized(queue);
 }
 
+// Linux opaque-background alignment. The window is opaque (WebKitGTK+NVIDIA
+// renders transparency as flickering black — see CLAUDE.md), so we paint the
+// real desktop wallpaper behind the glass. To hide the seams where the desktop
+// shows around the window (the border gap, and the panel strip a filled window
+// can't cover), the wallpaper is sized to the whole monitor and shifted by the
+// window's offset within it, so it lines up pixel-for-pixel with the desktop
+// behind it. That needs the window's absolute position — which the compositor
+// only gives on X11. On Wayland (COSMIC) both outerPosition() and the monitor
+// position report {0,0}, and the work area reports no panel inset, so alignment
+// is impossible; we fall back to plainly cover-fitting the wallpaper to the
+// window (CSS defaults). The image refreshes live when the wallpaper changes.
+async function setupLinuxWallpaper() {
+  const { core, window: W, event } = window.__TAURI__;
+  const root = document.documentElement;
+  const win = W.getCurrentWindow();
+  const BG_VARS = ["--desktop-bg-x", "--desktop-bg-y", "--desktop-bg-w", "--desktop-bg-h"];
+
+  let server = "unknown";
+  try {
+    server = await core.invoke("display_server");
+  } catch {}
+
+  const applyImage = (uri) => {
+    if (uri) root.style.setProperty("--desktop-bg", `url("${uri}")`);
+  };
+
+  const align = async () => {
+    // Wayland lies about window position ({0,0}); acting on it paints the wrong
+    // slice of wallpaper. Cover-fit the window instead (clear the vars).
+    if (server !== "x11") {
+      for (const v of BG_VARS) root.style.removeProperty(v);
+      return;
+    }
+    try {
+      const [pos, mon, scale] = await Promise.all([
+        win.outerPosition(),
+        W.currentMonitor(),
+        win.scaleFactor(),
+      ]);
+      if (!mon) return;
+      const s = scale || 1;
+      root.style.setProperty("--desktop-bg-x", `${-(pos.x - mon.position.x) / s}px`);
+      root.style.setProperty("--desktop-bg-y", `${-(pos.y - mon.position.y) / s}px`);
+      root.style.setProperty("--desktop-bg-w", `${mon.size.width / s}px`);
+      root.style.setProperty("--desktop-bg-h", `${mon.size.height / s}px`);
+    } catch {}
+  };
+
+  try {
+    applyImage(await core.invoke("desktop_background"));
+  } catch {}
+  await align();
+  try {
+    win.onMoved(align);
+    win.onResized(align);
+    event.listen("desktop-background", (e) => applyImage(e.payload));
+  } catch {}
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   restoreWindowState(); // async, fire-and-forget: reposition ASAP
   updateClock();
@@ -2126,6 +2185,17 @@ window.addEventListener("DOMContentLoaded", async () => {
   // The interactivity gate is ⌥ on macOS, Alt elsewhere.
   if (!navigator.platform.includes("Mac")) {
     document.getElementById("mod-hint").textContent = "alt interact";
+  }
+  // Linux/WebKitGTK transparency workaround (see base.css and CLAUDE.md):
+  // WebKitGTK on NVIDIA renders a transparent window's see-through regions as
+  // flickering black garbage. So on Linux the HUD is *opaque* — we paint the
+  // desktop wallpaper behind the glass instead of letting the window show
+  // through. `.is-linux` also drops backdrop-filter (a no-op over a would-be
+  // transparent surface). The solid fallback colour lives in base.css for when
+  // the wallpaper can't be resolved (e.g. COSMIC's rotating folder).
+  if (navigator.platform.includes("Linux")) {
+    document.documentElement.classList.add("is-linux");
+    setupLinuxWallpaper();
   }
   initThemePicker();
   initDisplayMenu();

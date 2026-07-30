@@ -143,6 +143,147 @@ pub fn set_overlay(window: WebviewWindow, above: bool) -> Result<(), String> {
     }
 }
 
+/// Linux transparency workaround: WebKitGTK on NVIDIA renders a transparent
+/// window's see-through regions as flickering black garbage (reproduces on both
+/// COSMIC/Wayland and GNOME/Xorg — see CLAUDE.md). To avoid any transparent
+/// region, the Linux frontend paints an *opaque* background behind the glass.
+/// This returns the current desktop wallpaper as a `data:` URI so that
+/// background is the real wallpaper; the frontend sizes and offsets it to the
+/// monitor so it lines up with the desktop showing around the window. Returns
+/// `None` when no wallpaper can be resolved (solid-colour fallback frontend).
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn desktop_background() -> Option<String> {
+    encode_wallpaper(&current_wallpaper_path()?)
+}
+
+/// Read a wallpaper file and return it as a `data:` URI.
+#[cfg(target_os = "linux")]
+fn encode_wallpaper(path: &std::path::Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let mime = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        _ => "image/png",
+    };
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(format!("data:{mime};base64,{b64}"))
+}
+
+/// Resolve the current desktop wallpaper file. Tries COSMIC's runtime state
+/// (it rotates a folder, so gsettings holds no usable path) first, then the
+/// GNOME/Pop!_OS gsettings key.
+#[cfg(target_os = "linux")]
+fn current_wallpaper_path() -> Option<std::path::PathBuf> {
+    cosmic_wallpaper_path().or_else(gnome_wallpaper_path)
+}
+
+/// COSMIC writes the wallpaper currently shown on each output to
+/// `~/.local/state/cosmic/com.system76.CosmicBackground/v1/wallpapers` as a RON
+/// list of `("OUTPUT", Path("…"))` — refreshed on every rotation. Return the
+/// first entry whose file exists (all outputs share one image in the common
+/// "same on all" setup).
+#[cfg(target_os = "linux")]
+fn cosmic_wallpaper_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME")?;
+    let state = std::path::Path::new(&home)
+        .join(".local/state/cosmic/com.system76.CosmicBackground/v1/wallpapers");
+    let text = std::fs::read_to_string(&state).ok()?;
+    for chunk in text.split("Path(\"").skip(1) {
+        if let Some(end) = chunk.find("\")") {
+            let p = std::path::PathBuf::from(&chunk[..end]);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Read the GNOME/Pop!_OS wallpaper path from gsettings (prefer the dark
+/// variant). Returns the file path if it exists.
+#[cfg(target_os = "linux")]
+fn gnome_wallpaper_path() -> Option<std::path::PathBuf> {
+    for key in ["picture-uri-dark", "picture-uri"] {
+        let out = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.background", key])
+            .output()
+            .ok()?;
+        let raw = String::from_utf8_lossy(&out.stdout);
+        let uri = raw.trim().trim_matches('\'');
+        if let Some(rest) = uri.strip_prefix("file://") {
+            // Minimal percent-decode for the common cases (spaces etc.).
+            let decoded = rest.replace("%20", " ");
+            let p = std::path::PathBuf::from(decoded);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Watch for wallpaper changes — COSMIC rotates every few minutes, and the user
+/// can change it manually — and push the new wallpaper to the frontend so the
+/// opaque background never drifts out of sync with the real desktop. Cheaply
+/// polls the resolved path and only re-encodes when it actually changes.
+#[cfg(target_os = "linux")]
+pub fn spawn_wallpaper_watch(window: WebviewWindow) {
+    use tauri::Emitter;
+    tauri::async_runtime::spawn(async move {
+        let mut last = current_wallpaper_path();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            let now = current_wallpaper_path();
+            if now != last {
+                last = now.clone();
+                if let Some(uri) = now.as_deref().and_then(encode_wallpaper) {
+                    let _ = window.emit("desktop-background", uri);
+                }
+            }
+        }
+    });
+}
+
+/// Report the display server the session is running under: "wayland", "x11",
+/// or "unknown". The frontend only attempts wallpaper alignment on X11 — on
+/// Wayland the compositor refuses to reveal a window's absolute position
+/// (reports {0,0}), so alignment is impossible and the wallpaper is cover-fit
+/// to the window instead.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub fn display_server() -> String {
+    if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        "wayland".into()
+    } else if std::env::var_os("DISPLAY").is_some() {
+        "x11".into()
+    } else {
+        "unknown".into()
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub fn desktop_background() -> Option<String> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn spawn_wallpaper_watch(_window: WebviewWindow) {}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub fn display_server() -> String {
+    "unknown".into()
+}
+
 /// Raw Win32 plumbing for the desktop layer. HWNDs travel as isize so the
 /// version of the `windows` crate tauri links internally never has to match
 /// the one used here.
