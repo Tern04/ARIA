@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="cosmic_toplevel_info_unstable_v1">
+  <copyright>
+    Copyright © 2018 Ilia Bozhinov
+    Copyright © 2020 Isaac Freund
+    Copyright © 2024 Victoria Brekenfeld
+
+    Permission to use, copy, modify, distribute, and sell this
+    software and its documentation for any purpose is hereby granted
+    without fee, provided that the above copyright notice appear in
+    all copies and that both that copyright notice and this permission
+    notice appear in supporting documentation, and that the name of
+    the copyright holders not be used in advertising or publicity
+    pertaining to distribution of the software without specific,
+    written prior permission.  The copyright holders make no
+    representations about the suitability of this software for any
+    purpose.  It is provided "as is" without express or implied
+    warranty.
+  </copyright>
+
+  <!--
+    Trimmed, version-1-only vendored copy of COSMIC's cosmic-toplevel-info
+    protocol, carrying just the surface ARIA needs to learn which window is
+    focused (the `activated` state) and its app_id. Event ordering is kept
+    byte-for-byte with the upstream v3 definition through the `state` event
+    (opcode 8) so the wire opcodes still line up when we bind at version 1;
+    later v2/v3-only events are dropped. The two `workspace_*` events are kept
+    as opcode placeholders — cosmic-comp still numbers `state` at opcode 8 —
+    but their argument is retyped to a minimal local `zcosmic_workspace_handle_v1`
+    stub so the generated code stays self-contained (an interface-less object
+    arg does not compile, and ARIA never reads these events). Upstream:
+    https://github.com/pop-os/cosmic-protocols (permissive header above).
+  -->
+  <interface name="zcosmic_toplevel_info_v1" version="1">
+    <description summary="list toplevels and their properties"/>
+    <event name="toplevel">
+      <description summary="a toplevel has been created"/>
+      <arg name="toplevel" type="new_id" interface="zcosmic_toplevel_handle_v1"/>
+    </event>
+    <request name="stop">
+      <description summary="stop sending events"/>
+    </request>
+    <event name="finished">
+      <description summary="the compositor is done with the toplevel manager"/>
+    </event>
+  </interface>
+
+  <interface name="zcosmic_toplevel_handle_v1" version="1">
+    <description summary="an open toplevel"/>
+    <request name="destroy" type="destructor">
+      <description summary="destroy the handle"/>
+    </request>
+    <event name="closed">
+      <description summary="the toplevel has been closed"/>
+    </event>
+    <event name="done">
+      <description summary="all information about the toplevel has been sent"/>
+    </event>
+    <event name="title">
+      <description summary="title change"/>
+      <arg name="title" type="string"/>
+    </event>
+    <event name="app_id">
+      <description summary="app_id change"/>
+      <arg name="app_id" type="string"/>
+    </event>
+    <event name="output_enter">
+      <description summary="toplevel entered an output"/>
+      <arg name="output" type="object" interface="wl_output"/>
+    </event>
+    <event name="output_leave">
+      <description summary="toplevel left an output"/>
+      <arg name="output" type="object" interface="wl_output"/>
+    </event>
+    <event name="workspace_enter">
+      <description summary="toplevel entered a workspace (opcode placeholder, unused)"/>
+      <arg name="workspace" type="object" interface="zcosmic_workspace_handle_v1"/>
+    </event>
+    <event name="workspace_leave">
+      <description summary="toplevel left a workspace (opcode placeholder, unused)"/>
+      <arg name="workspace" type="object" interface="zcosmic_workspace_handle_v1"/>
+    </event>
+    <enum name="state">
+      <description summary="types of states on the toplevel"/>
+      <entry name="maximized"  value="0"/>
+      <entry name="minimized"  value="1"/>
+      <entry name="activated"  value="2"/>
+      <entry name="fullscreen" value="3"/>
+    </enum>
+    <event name="state">
+      <description summary="the toplevel state changed"/>
+      <arg name="state" type="array"/>
+    </event>
+  </interface>
+
+  <!-- Minimal stub so the workspace_* placeholder object args have a concrete
+       type. ARIA never binds the workspace protocol, so these are never used. -->
+  <interface name="zcosmic_workspace_handle_v1" version="1">
+    <description summary="stub workspace handle (placeholder for opcode alignment)"/>
+    <request name="destroy" type="destructor">
+      <description summary="destroy the stub handle"/>
+    </request>
+  </interface>
+</protocol>

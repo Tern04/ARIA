@@ -50,6 +50,17 @@ windows = { version = "0.62", features = [
     "Storage_Streams",                 # SMTC thumbnail stream (album art)
 ] }
 
+# Linux only: a tiny Wayland client for the screen-time tracker — cosmic-comp
+# exposes the focused window (cosmic-toplevel-info) and idle state
+# (ext-idle-notify) only over Wayland, with no CLI/D-Bus equivalent. Bindings
+# are generated at build time from the vendored, permissively-licensed protocol
+# XML under `protocols/` (see collectors::screentime), so no GPL cosmic crate is
+# pulled into this MIT project.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-backend = "0.3"
+wayland-scanner = "0.31"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 # Machine-bound encryption for the macOS dev-mode secrets file.

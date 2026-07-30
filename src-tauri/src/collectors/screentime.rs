@@ -24,7 +24,7 @@ struct AppTime {
     secs: u64,
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut day = today();
@@ -61,8 +61,8 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// The Linux tracker lands with that machine.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Other Unix without the required window/idle facilities — no tracker.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn spawn(_app: AppHandle) {}
 
 fn summarize(usage: &HashMap<String, u64>, yesterday_total: Option<u64>) -> ScreenTime {
@@ -222,4 +222,326 @@ fn idle_seconds() -> f64 {
     }
     let now = unsafe { GetTickCount() };
     now.wrapping_sub(info.dwTime) as f64 / 1000.0
+}
+
+/// Linux/COSMIC: the focused window's app comes from a tiny background Wayland
+/// client (see `wl`), since Wayland exposes neither the focused window nor idle
+/// time over any CLI or D-Bus here.
+#[cfg(target_os = "linux")]
+fn frontmost_app(_app: &AppHandle) -> Option<String> {
+    wl::ensure_started();
+    wl::active_app()
+}
+
+/// ext-idle-notify reports idle as a threshold crossing (idled/resumed at
+/// `IDLE_LIMIT`), not a running counter, so map that boolean back onto the
+/// numeric contract the shared loop expects: past the limit when idle, zero
+/// otherwise. Until the Wayland client connects this reports "active", so
+/// early ticks count rather than drop.
+#[cfg(target_os = "linux")]
+fn idle_seconds() -> f64 {
+    if wl::is_idle() {
+        IDLE_LIMIT + 1.0
+    } else {
+        0.0
+    }
+}
+
+/// Background Wayland client feeding the screen-time tracker on Linux. It binds
+/// COSMIC's `zcosmic_toplevel_info_v1` (which window is `activated`) and the
+/// standard `ext_idle_notifier_v1` (idle threshold), publishing the focused
+/// app id and an idle flag into shared state the tracker loop polls. Bindings
+/// are generated from the vendored protocol XML under `protocols/`.
+///
+/// Everything is gated to Linux and fails soft: on a non-COSMIC compositor (no
+/// toplevel-info global) or any protocol error the client simply reports no
+/// active app, and the tracker records nothing — the same visible result as
+/// the old no-op stub.
+#[cfg(target_os = "linux")]
+mod wl {
+    use super::IDLE_LIMIT;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Mutex, Once};
+    use std::time::Duration;
+    use wayland_client::backend::ObjectId;
+    use wayland_client::protocol::{wl_output, wl_registry, wl_seat};
+    use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+
+    pub mod cosmic {
+        use wayland_client;
+        use wayland_client::protocol::*;
+        pub mod __interfaces {
+            use wayland_client::protocol::__interfaces::*;
+            wayland_scanner::generate_interfaces!("protocols/cosmic-toplevel-info-v1.xml");
+        }
+        use self::__interfaces::*;
+        wayland_scanner::generate_client_code!("protocols/cosmic-toplevel-info-v1.xml");
+    }
+    pub mod idle {
+        use wayland_client;
+        use wayland_client::protocol::*;
+        pub mod __interfaces {
+            use wayland_client::protocol::__interfaces::*;
+            wayland_scanner::generate_interfaces!("protocols/ext-idle-notify-v1.xml");
+        }
+        use self::__interfaces::*;
+        wayland_scanner::generate_client_code!("protocols/ext-idle-notify-v1.xml");
+    }
+
+    use cosmic::zcosmic_toplevel_handle_v1::{Event as HEvent, ZcosmicToplevelHandleV1};
+    use cosmic::zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1;
+    use cosmic::zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1;
+    use idle::ext_idle_notification_v1::{Event as NEvent, ExtIdleNotificationV1};
+    use idle::ext_idle_notifier_v1::ExtIdleNotifierV1;
+
+    static ACTIVE: Mutex<Option<String>> = Mutex::new(None);
+    static IDLE: AtomicBool = AtomicBool::new(false);
+    static START: Once = Once::new();
+
+    /// Friendly name of the focused app, or None when unknown/nothing focused.
+    pub fn active_app() -> Option<String> {
+        ACTIVE.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Whether the session has been idle past `IDLE_LIMIT`.
+    pub fn is_idle() -> bool {
+        IDLE.load(Ordering::Relaxed)
+    }
+
+    /// Start the Wayland client once, on the first tracker tick.
+    pub fn ensure_started() {
+        START.call_once(|| {
+            let _ = std::thread::Builder::new()
+                .name("aria-screentime-wl".into())
+                .spawn(run);
+        });
+    }
+
+    fn run() {
+        // Reconnect on any protocol error or disconnect so a transient failure
+        // (or a compositor restart) can't permanently stop tracking.
+        loop {
+            if let Err(e) = run_once() {
+                eprintln!("screentime wayland: {e}");
+                if let Ok(mut g) = ACTIVE.lock() {
+                    *g = None; // don't keep crediting a stale app after a drop
+                }
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    }
+
+    /// One connection lifetime: bind the globals, arm idle, then dispatch until
+    /// the connection errors or closes.
+    fn run_once() -> Result<(), Box<dyn std::error::Error>> {
+        let conn = Connection::connect_to_env()?;
+        let mut queue = conn.new_event_queue();
+        let qh = queue.handle();
+        conn.display().get_registry(&qh, ());
+
+        let mut w = Watcher::default();
+        // First roundtrip resolves globals and binds them (registry handler).
+        queue.roundtrip(&mut w)?;
+
+        // Arm a single idle notification at the tracker's idle threshold.
+        if let (Some(notifier), Some(seat)) = (w.notifier.clone(), w.seat.clone()) {
+            let timeout_ms = (IDLE_LIMIT as u32).saturating_mul(1000);
+            notifier.get_idle_notification(timeout_ms, &seat, &qh, ());
+        }
+
+        loop {
+            queue.blocking_dispatch(&mut w)?;
+        }
+    }
+
+    #[derive(Default)]
+    struct Watcher {
+        app_ids: HashMap<ObjectId, String>,
+        active: Option<ObjectId>,
+        seat: Option<wl_seat::WlSeat>,
+        notifier: Option<ExtIdleNotifierV1>,
+    }
+
+    impl Watcher {
+        /// Mirror the currently-activated toplevel's app id into shared state.
+        fn publish(&self) {
+            let name = self
+                .active
+                .as_ref()
+                .and_then(|id| self.app_ids.get(id))
+                .map(|id| friendly(id));
+            if let Ok(mut g) = ACTIVE.lock() {
+                *g = name;
+            }
+        }
+    }
+
+    /// A reverse-DNS app id → a short display label:
+    /// "com.system76.CosmicTerm" → "CosmicTerm", "firefox" → "Firefox".
+    fn friendly(app_id: &str) -> String {
+        let base = app_id.strip_suffix(".desktop").unwrap_or(app_id);
+        let seg = base.rsplit('.').next().unwrap_or(base);
+        let seg = if seg.is_empty() { base } else { seg };
+        let mut chars = seg.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => app_id.to_string(),
+        }
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, ()> for Watcher {
+        fn event(
+            state: &mut Self,
+            reg: &wl_registry::WlRegistry,
+            event: wl_registry::Event,
+            _: &(),
+            _: &Connection,
+            qh: &QueueHandle<Self>,
+        ) {
+            if let wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } = event
+            {
+                match interface.as_str() {
+                    "zcosmic_toplevel_info_v1" => {
+                        reg.bind::<ZcosmicToplevelInfoV1, _, _>(name, 1, qh, ());
+                    }
+                    // Outputs must be bound so the toplevel handle's
+                    // output_enter/leave events resolve their wl_output arg.
+                    "wl_output" => {
+                        reg.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
+                    }
+                    "wl_seat" => {
+                        state.seat =
+                            Some(reg.bind::<wl_seat::WlSeat, _, _>(name, version.min(1), qh, ()));
+                    }
+                    "ext_idle_notifier_v1" => {
+                        state.notifier =
+                            Some(reg.bind::<ExtIdleNotifierV1, _, _>(name, 1, qh, ()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    impl Dispatch<ZcosmicToplevelInfoV1, ()> for Watcher {
+        fn event(
+            _: &mut Self,
+            _: &ZcosmicToplevelInfoV1,
+            _: cosmic::zcosmic_toplevel_info_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+        // The `toplevel` event (opcode 0) creates a child handle.
+        wayland_client::event_created_child!(Watcher, ZcosmicToplevelInfoV1, [
+            0 => (ZcosmicToplevelHandleV1, ()),
+        ]);
+    }
+
+    impl Dispatch<ZcosmicToplevelHandleV1, ()> for Watcher {
+        fn event(
+            state: &mut Self,
+            handle: &ZcosmicToplevelHandleV1,
+            event: HEvent,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let id = handle.id();
+            match event {
+                HEvent::AppId { app_id } => {
+                    state.app_ids.insert(id, app_id);
+                    state.publish();
+                }
+                HEvent::State { state: bytes } => {
+                    // The state arg is a packed array of u32 enum values;
+                    // `activated` (2) marks the focused window.
+                    let activated = bytes
+                        .chunks_exact(4)
+                        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == 2);
+                    if activated {
+                        state.active = Some(id);
+                        state.publish();
+                    }
+                }
+                HEvent::Closed => {
+                    state.app_ids.remove(&id);
+                    if state.active.as_ref() == Some(&id) {
+                        state.active = None;
+                    }
+                    state.publish();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    impl Dispatch<ExtIdleNotificationV1, ()> for Watcher {
+        fn event(
+            _: &mut Self,
+            _: &ExtIdleNotificationV1,
+            event: NEvent,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            match event {
+                NEvent::Idled => IDLE.store(true, Ordering::Relaxed),
+                NEvent::Resumed => IDLE.store(false, Ordering::Relaxed),
+            }
+        }
+    }
+
+    // These objects carry no information ARIA reads; the impls just satisfy the
+    // dispatch requirements for their proxies.
+    impl Dispatch<wl_output::WlOutput, ()> for Watcher {
+        fn event(
+            _: &mut Self,
+            _: &wl_output::WlOutput,
+            _: wl_output::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<wl_seat::WlSeat, ()> for Watcher {
+        fn event(
+            _: &mut Self,
+            _: &wl_seat::WlSeat,
+            _: wl_seat::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<ExtIdleNotifierV1, ()> for Watcher {
+        fn event(
+            _: &mut Self,
+            _: &ExtIdleNotifierV1,
+            _: idle::ext_idle_notifier_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
+    impl Dispatch<ZcosmicWorkspaceHandleV1, ()> for Watcher {
+        fn event(
+            _: &mut Self,
+            _: &ZcosmicWorkspaceHandleV1,
+            _: cosmic::zcosmic_workspace_handle_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+    }
 }
