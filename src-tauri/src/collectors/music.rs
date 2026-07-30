@@ -69,11 +69,11 @@ pub async fn music_play_playlist(app: AppHandle, name: String) -> Result<(), Str
 }
 
 fn sample_now() -> MusicState {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
     {
         sample_music()
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         MusicState::Stopped
     }
@@ -323,7 +323,7 @@ fn thumbnail_data_url(
 }
 
 /// Plain base64 (RFC 4648) — small enough not to warrant a dependency.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 fn base64(data: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
@@ -338,8 +338,23 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
-/// Linux (MPRIS) transport control lands with that machine.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Linux (MPRIS): drive whichever player playerctl selects (the same source
+/// the media keys control). `play-pause` toggles; skips move track.
+#[cfg(target_os = "linux")]
+fn control(action: &str) -> Result<(), String> {
+    let verb = match action {
+        "playpause" => "play-pause",
+        "next" => "next",
+        "previous" => "previous",
+        other => return Err(format!("unknown music action: {other}")),
+    };
+    // No player running is not an error — nothing to control, like macOS.
+    let _ = run_playerctl(&[verb]);
+    Ok(())
+}
+
+/// Other Unix (no MPRIS tooling assumed) — inert, like the old stub.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn control(_action: &str) -> Result<(), String> {
     Ok(())
 }
@@ -356,7 +371,7 @@ fn play_playlist(_name: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
 pub fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -371,9 +386,215 @@ pub fn spawn(app: AppHandle) {
     });
 }
 
-/// The Linux (MPRIS) variant lands with that machine.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Other Unix without MPRIS tooling — no now-playing source.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn spawn(_app: AppHandle) {}
+
+/// Linux now-playing over MPRIS via `playerctl` — the same source the media
+/// keys drive, so it covers Spotify, VLC and any browser tab (Firefox, Opera…)
+/// exposing a media session. When `playerctl` is missing or no player is
+/// running the commands fail and we report Stopped, exactly like the old stub.
+#[cfg(target_os = "linux")]
+fn sample_music() -> MusicState {
+    // One unit-separator-delimited line keeps every field from one consistent
+    // sample; \x1f never appears in titles. Position isn't metadata, so it is
+    // fetched separately below.
+    const FMT: &str = "{{status}}\x1f{{playerName}}\x1f{{title}}\x1f{{artist}}\x1f{{album}}\x1f{{mpris:length}}\x1f{{mpris:artUrl}}";
+    let Ok(line) = run_playerctl(&["metadata", "--format", FMT]) else {
+        return MusicState::Stopped; // no player / playerctl absent
+    };
+    let mut f = line.split('\x1f');
+    let status = f.next().unwrap_or("").trim();
+    let player = f.next().unwrap_or("").trim();
+    let title = f.next().unwrap_or("").trim();
+    let artist = f.next().unwrap_or("").trim();
+    let album = f.next().unwrap_or("").trim();
+    let length_us: u64 = f.next().unwrap_or("").trim().parse().unwrap_or(0);
+    let art_url = f.next().unwrap_or("").trim();
+
+    if title.is_empty() || !matches!(status, "Playing" | "Paused") {
+        return MusicState::Stopped;
+    }
+
+    // `playerctl position` prints float seconds; clamp to the track length so
+    // the bar never overshoots when the two calls straddle a tick.
+    let duration_secs = length_us / 1_000_000;
+    let mut position_secs = run_playerctl(&["position"])
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .map(|v| v.max(0.0) as u64)
+        .unwrap_or(0);
+    if duration_secs > 0 {
+        position_secs = position_secs.min(duration_secs);
+    }
+
+    let now = NowPlaying {
+        app_name: friendly_player_name(player),
+        position_secs,
+        duration_secs,
+        // The CSP only allows `data:` images, so everything is inlined:
+        // Chromium browsers publish a local file:// cover, Spotify an https one.
+        art: resolve_art(art_url, title, artist),
+        title: title.to_string(),
+        artist: artist.to_string(),
+        album: album.to_string(),
+    };
+    if status == "Playing" {
+        MusicState::Playing(now)
+    } else {
+        MusicState::Paused(now)
+    }
+}
+
+/// MPRIS player-bus names ("firefox", "spotify", "chromium") → a display label.
+#[cfg(target_os = "linux")]
+fn friendly_player_name(player: &str) -> Option<String> {
+    let id = player.to_lowercase();
+    let name = if id.contains("spotify") {
+        "Spotify"
+    } else if id.contains("firefox") {
+        "Firefox"
+    } else if id.contains("opera") {
+        "Opera"
+    } else if id.contains("chromium") {
+        "Chromium"
+    } else if id.contains("chrome") {
+        "Chrome"
+    } else if id.contains("vlc") {
+        "VLC"
+    } else if id.contains("mpv") {
+        "mpv"
+    } else if id.is_empty() {
+        return None;
+    } else {
+        // Unknown player — Title-case the bus name so it still reads sensibly.
+        let mut c = player.chars();
+        return c
+            .next()
+            .map(|first| first.to_uppercase().collect::<String>() + c.as_str());
+    };
+    Some(name.to_string())
+}
+
+/// Cover art as an inlined `data:` URL (the CSP forbids remote images). Handles
+/// the three shapes MPRIS players publish: an already-inlined `data:` URI, a
+/// local `file://` path (Chromium caches the cover to disk), or a remote
+/// `http(s)` URL (Spotify, some sites). Cached per track — the poll runs every
+/// 10 s and the art is by far the heaviest field to move.
+#[cfg(target_os = "linux")]
+fn resolve_art(art_url: &str, title: &str, artist: &str) -> Option<String> {
+    use std::sync::Mutex;
+
+    if art_url.is_empty() {
+        return None;
+    }
+    if art_url.starts_with("data:") {
+        return Some(art_url.to_string()); // already inlined
+    }
+
+    static CACHE: Mutex<Option<((String, String), Option<String>)>> = Mutex::new(None);
+    let key = (title.to_string(), artist.to_string());
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((k, art)) = cache.as_ref() {
+            if *k == key {
+                return art.clone();
+            }
+        }
+    }
+
+    let art = fetch_art_bytes(art_url).map(|(mime, bytes)| {
+        format!("data:{mime};base64,{}", base64(&bytes))
+    });
+    if let Ok(mut cache) = CACHE.lock() {
+        *cache = Some((key, art.clone()));
+    }
+    art
+}
+
+/// Load the raw cover bytes + mime for a `file://` or `http(s)` art URL.
+/// Returns None on any failure so a missing cover just leaves the art blank.
+#[cfg(target_os = "linux")]
+fn fetch_art_bytes(art_url: &str) -> Option<(String, Vec<u8>)> {
+    const MAX: usize = 3_000_000; // guard against an unreasonably large cover
+    let bytes: Vec<u8> = if let Some(path) = art_url.strip_prefix("file://") {
+        let decoded = percent_decode(path);
+        let data = std::fs::read(&decoded).ok()?;
+        if data.is_empty() || data.len() > MAX {
+            return None;
+        }
+        data
+    } else if art_url.starts_with("http") {
+        // sample_music runs on a blocking thread, so driving the async client
+        // to completion here is safe (no nested-runtime reentry).
+        let url = art_url.to_string();
+        tauri::async_runtime::block_on(async move {
+            // Bounded so a slow/hanging cover host can't stall the poll loop.
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .ok()?;
+            let resp = client.get(&url).send().await.ok()?;
+            let data = resp.bytes().await.ok()?;
+            if data.is_empty() || data.len() > MAX {
+                return None;
+            }
+            Some(data.to_vec())
+        })?
+    } else {
+        return None; // unknown scheme
+    };
+    Some((sniff_image_mime(&bytes).to_string(), bytes))
+}
+
+/// Mime from magic bytes; MPRIS art URLs carry no reliable content-type.
+#[cfg(target_os = "linux")]
+fn sniff_image_mime(bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else {
+        "image/jpeg" // JPEG or unknown — browsers sniff anyway
+    }
+}
+
+/// Decode %XX escapes in a file:// path. MPRIS paths are otherwise plain UTF-8.
+#[cfg(target_os = "linux")]
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Run `playerctl` with the given args, returning trimmed stdout on success.
+/// A non-zero exit (no player, playerctl not installed) becomes an error the
+/// callers treat as "nothing playing".
+#[cfg(target_os = "linux")]
+fn run_playerctl(args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("playerctl")
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn sample_music() -> MusicState {
