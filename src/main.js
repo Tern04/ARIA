@@ -1919,12 +1919,32 @@ function workArea(m) {
   return m.workArea || { position: m.position, size: m.size };
 }
 
+// GNOME/Mutter auto-maximizes any window that asks for (nearly) the whole work
+// area — exactly what fillMonitor does. A maximized X11 window then ignores
+// setSize() and gtk_window_begin_move_drag(), so "Fill screen" looks stuck and
+// the ✥ MOVE grip goes dead. Every geometry change drops maximization first.
+async function unmaximize(win) {
+  try {
+    if (await win.isMaximized()) await win.unmaximize();
+  } catch {}
+}
+
+async function isFilled() {
+  if ((loadWinState() || {}).fill) return true;
+  try {
+    return await window.__TAURI__.window.getCurrentWindow().isMaximized();
+  } catch {
+    return false;
+  }
+}
+
 async function placeCentered(m, w, h) {
   const W = window.__TAURI__.window;
   const wa = workArea(m);
   const cw = Math.min(w, wa.size.width);
   const ch = Math.min(h, wa.size.height);
   const win = W.getCurrentWindow();
+  await unmaximize(win);
   await win.setSize(new W.PhysicalSize(cw, ch));
   await win.setPosition(
     new W.PhysicalPosition(
@@ -1938,7 +1958,16 @@ async function fillMonitor(m) {
   const W = window.__TAURI__.window;
   const wa = workArea(m);
   const win = W.getCurrentWindow();
+  await unmaximize(win);
   await win.setPosition(new W.PhysicalPosition(wa.position.x, wa.position.y));
+  if (IS_LINUX) {
+    // Ask for maximization explicitly rather than letting Mutter infer it from
+    // the size, so the state is one unmaximize() can undo.
+    try {
+      await win.maximize();
+      return;
+    } catch {}
+  }
   await win.setSize(new W.PhysicalSize(wa.size.width, wa.size.height));
 }
 
@@ -1967,12 +1996,15 @@ async function restoreWindowState() {
       await fillMonitor(target);
     } else {
       const win = W.getCurrentWindow();
+      // A window the WM left maximized ignores both calls below.
+      await unmaximize(win);
       await win.setPosition(new W.PhysicalPosition(s.x, s.y));
       await win.setSize(new W.PhysicalSize(s.w, s.h));
     }
   } catch (e) {
     console.error("window restore failed:", e);
   }
+  await refreshFilled();
 }
 
 function initDisplayMenu() {
@@ -2099,9 +2131,10 @@ function initWindowStateSaver() {
         const size = await win.innerSize();
         const patch = { x: pos.x, y: pos.y, w: size.width, h: size.height };
         const s = loadWinState() || {};
-        if (s.fill) {
-          // A size that no longer matches the work area means the user
-          // resized manually and broke fill.
+        // A size that no longer matches the work area means the user resized
+        // manually and broke fill — unless the window is genuinely maximized,
+        // in which case the geometry can legitimately differ by the frame.
+        if (s.fill && !(await win.isMaximized().catch(() => false))) {
           const m = await W.currentMonitor();
           if (m) {
             const wa = workArea(m);
@@ -2111,6 +2144,7 @@ function initWindowStateSaver() {
           }
         }
         saveWinState(patch);
+        await refreshFilled();
       } catch {}
     }, 500);
   };
