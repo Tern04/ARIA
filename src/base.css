@@ -1397,23 +1397,20 @@ html.is-linux {
    video, or nothing. A real element rather than a ::before because a
    pseudo-element cannot host a <video>.
 
-   Positioning serves the Linux seam trick: the layer is sized to the whole
-   monitor and shifted by the window's offset within it (--desktop-bg-* set
-   from JS), so the image is an exact continuation of the real desktop showing
-   around the window and the seams at the border and panel strip disappear.
-   When JS can't learn the window's position (Wayland lies, reporting {0,0}) —
-   or when the source is a picked file, where there is nothing to line up with —
-   the defaults simply cover-fit the viewport.
+   The layer is the window, so `object-fit` on the media below resolves against
+   the window rect and the Fit control means what it says. This used to size the
+   layer to the whole monitor and shift it by the window's offset, so the image
+   continued the real desktop showing around the window — but that silently
+   overrode Fit (against a monitor-sized layer a monitor-aspect wallpaper looks
+   identical under cover, contain and fill) and clipped the image by the
+   window's own offset. Fit wins; the edges no longer line up with the desktop.
 
    z-index: -1 on a child of <body> paints behind .hud but above the root
    background; nothing in the ancestor chain creates a stacking context. */
 
 #wallpaper-layer {
   position: fixed;
-  left: var(--desktop-bg-x, 0);
-  top: var(--desktop-bg-y, 0);
-  width: var(--desktop-bg-w, 100vw);
-  height: var(--desktop-bg-h, 100vh);
+  inset: 0;
   z-index: -1;
   pointer-events: none;
   overflow: hidden;

@@ -2216,17 +2216,11 @@ async function setupWallpaper() {
   watchWallpaperSources();
 }
 
-// Live sources: the desktop wallpaper rotates (COSMIC every ~5 min), and the
-// window moving/resizing changes the alignment offset.
+// Live source: the desktop wallpaper rotates (COSMIC every ~5 min) and can be
+// changed by hand, so the backdrop follows it instead of going stale.
 function watchWallpaperSources() {
-  const { window: W, event } = window.__TAURI__;
-  const win = W.getCurrentWindow();
-  const realign = () => {
-    if (wallpaperCfg?.source === "desktop") alignWallpaper();
-  };
+  const { event } = window.__TAURI__;
   try {
-    win.onMoved(realign);
-    win.onResized(realign);
     event.listen("desktop-background", (e) => {
       if (wallpaperCfg?.source === "desktop") setWallpaperMedia(e.payload, "image");
     });
@@ -2299,36 +2293,6 @@ async function setWallpaperMedia(src, kind) {
   img.hidden = false;
 }
 
-async function alignWallpaper() {
-  const { core, window: W } = window.__TAURI__;
-  const root = document.documentElement;
-  const BG_VARS = ["--desktop-bg-x", "--desktop-bg-y", "--desktop-bg-w", "--desktop-bg-h"];
-  const coverFit = () => BG_VARS.forEach((v) => root.style.removeProperty(v));
-
-  let server = "unknown";
-  try {
-    server = await core.invoke("display_server");
-  } catch {}
-  // Wayland lies about window position ({0,0}); acting on it paints the wrong
-  // slice of wallpaper, so cover-fit the window instead.
-  if (server !== "x11") return coverFit();
-  try {
-    const win = W.getCurrentWindow();
-    const [pos, mon, scale] = await Promise.all([
-      win.outerPosition(),
-      W.currentMonitor(),
-      win.scaleFactor(),
-    ]);
-    if (!mon) return coverFit();
-    const s = scale || 1;
-    root.style.setProperty("--desktop-bg-x", `${-(pos.x - mon.position.x) / s}px`);
-    root.style.setProperty("--desktop-bg-y", `${-(pos.y - mon.position.y) / s}px`);
-    root.style.setProperty("--desktop-bg-w", `${mon.size.width / s}px`);
-    root.style.setProperty("--desktop-bg-h", `${mon.size.height / s}px`);
-  } catch {
-    coverFit();
-  }
-}
 
 async function applyWallpaper(cfg) {
   const { core } = window.__TAURI__;
@@ -2348,10 +2312,6 @@ async function applyWallpaper(cfg) {
 
   if (cfg.source === "file" && cfg.path) {
     await setWallpaperMedia(core.convertFileSrc(cfg.path), cfg.kind);
-    // A picked file has no desktop to line up with — always cover-fit.
-    for (const v of ["--desktop-bg-x", "--desktop-bg-y", "--desktop-bg-w", "--desktop-bg-h"]) {
-      root.style.removeProperty(v);
-    }
     return;
   }
   if (cfg.source === "desktop") {
@@ -2360,7 +2320,6 @@ async function applyWallpaper(cfg) {
       uri = await core.invoke("desktop_background");
     } catch {}
     await setWallpaperMedia(uri, "image");
-    await alignWallpaper();
     return;
   }
   await setWallpaperMedia(null);
