@@ -103,7 +103,13 @@ Cross-platform widgets work, plus:
 
   Protocol bindings are generated from vendored, permissively-licensed XML in `src-tauri/protocols/`, so no GPL cosmic crate is pulled into this MIT project.
 
-Still pending: the desktop layer (`_NET_WM_WINDOW_TYPE_DESKTOP`) — the window currently sits as a normal, opaque window (see the WebKitGTK/NVIDIA note in the repo). Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
+- **Desktop layer** on **X11** (GNOME/Xorg and any other EWMH window manager): the HUD sits above the wallpaper, below every app window, on all workspaces, and out of the window switcher. It keeps keyboard focus, so the widget login forms still work.
+
+  This is done with EWMH window *states* — `_NET_WM_STATE_BELOW`, `STICKY`, `SKIP_TASKBAR`, `SKIP_PAGER` — on an ordinary managed window, **not** the `_NET_WM_WINDOW_TYPE_DESKTOP` hint that Conky-style widgets use. GNOME Shell draws the wallpaper itself and never expected a client to claim that layer, so Mutter's placement path for a desktop-type window misbehaves: it pinned the window to the far edge of the combined virtual screen and re-applied a "new window" offset on top of the previous position at every relaunch (y drifted −74, then −148). Correcting the position from a move/resize watcher only fed the loop, because the correction is itself a move. The states above are supported, tested paths, and `BELOW` is a persistent layer rather than a per-raise decision, so nothing has to fight the WM to keep the HUD down.
+
+  **On Wayland the HUD stays a normal window.** The mechanism there is `wlr-layer-shell`, which COSMIC implements natively but Mutter does not — so GNOME/Wayland has no route to a desktop layer at all.
+
+Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
 
 Note for GNOME/Xorg: Mutter auto-maximizes windows that ask for the whole work area, so *Fill screen* maximizes explicitly and the move/resize grips are disabled while it's on (a maximized X11 window ignores both).
 

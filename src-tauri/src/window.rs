@@ -62,9 +62,18 @@ pub fn set_desktop_layer(window: &WebviewWindow) {
     win_desktop::init_desktop_layer(hwnd.0 as isize);
 }
 
-/// Linux (_NET_WM_WINDOW_TYPE_DESKTOP hint) is implemented once that machine
-/// is available for testing. Until then the HUD behaves as a normal window.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Linux: pin the HUD to the desktop layer with EWMH window states on X11
+/// (see `x11_desktop` for why the `_NET_WM_WINDOW_TYPE_DESKTOP` hint is not
+/// used). Under Wayland the HUD stays a normal window — COSMIC's layer-shell
+/// is the mechanism there, and GNOME/Wayland offers none at all.
+#[cfg(target_os = "linux")]
+pub fn set_desktop_layer(_window: &WebviewWindow) {
+    if x11_desktop::available() {
+        x11_desktop::init();
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn set_desktop_layer(_window: &WebviewWindow) {}
 
 #[cfg(target_os = "macos")]
@@ -136,7 +145,15 @@ pub fn set_overlay(window: WebviewWindow, above: bool) -> Result<(), String> {
             })
             .map_err(|e| e.to_string())
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = window;
+        if x11_desktop::available() {
+            x11_desktop::set_overlay(above);
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = (window, above);
         Ok(())
@@ -177,12 +194,33 @@ fn encode_wallpaper(path: &std::path::Path) -> Option<String> {
     Some(format!("data:{mime};base64,{b64}"))
 }
 
-/// Resolve the current desktop wallpaper file. Tries COSMIC's runtime state
-/// (it rotates a folder, so gsettings holds no usable path) first, then the
-/// GNOME/Pop!_OS gsettings key.
+/// Resolve the current desktop wallpaper file, asking the desktop that is
+/// actually running first.
+///
+/// Both sources persist across sessions, so a fixed order lets a dormant one
+/// win: a Pop!_OS box that has booted COSMIC even once keeps its
+/// `com.system76.CosmicBackground` state file forever, and the image it names
+/// (a stock `/usr/share/backgrounds/cosmic/…` one) still exists — so trying
+/// COSMIC unconditionally shows that wallpaper on a GNOME session while the
+/// real one sits unread in gsettings. Picking by session makes the running
+/// desktop authoritative and leaves the other as a fallback.
 #[cfg(target_os = "linux")]
 fn current_wallpaper_path() -> Option<std::path::PathBuf> {
-    cosmic_wallpaper_path().or_else(gnome_wallpaper_path)
+    if running_cosmic() {
+        cosmic_wallpaper_path().or_else(gnome_wallpaper_path)
+    } else {
+        gnome_wallpaper_path().or_else(cosmic_wallpaper_path)
+    }
+}
+
+/// Whether cosmic-comp is the session's desktop. `XDG_CURRENT_DESKTOP` is a
+/// colon-separated list, so match a component rather than the whole value.
+#[cfg(target_os = "linux")]
+fn running_cosmic() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|v| {
+        v.split(':')
+            .any(|part| part.eq_ignore_ascii_case("cosmic"))
+    })
 }
 
 /// COSMIC writes the wallpaper currently shown on each output to
@@ -385,6 +423,214 @@ mod win_desktop {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
+        }
+    }
+}
+
+/// X11 desktop layer: EWMH window *states* on an ordinary managed window.
+///
+/// `_NET_WM_WINDOW_TYPE_DESKTOP` — the hint Conky-style widgets use — is not a
+/// workable path under Mutter. GNOME Shell draws the wallpaper itself and was
+/// never designed for a client to claim that layer, so the placement code for a
+/// desktop-type window is an untested path: it pinned the window to the far
+/// edge of the combined virtual screen and applied a fresh "new window" offset
+/// on top of the previous position on every relaunch (y drifted -74, then
+/// -148). Re-asserting the position from a move/resize watcher only fed the
+/// loop, since the correction is itself a move.
+///
+/// So the type hint is left alone and the layer is expressed as state instead:
+/// BELOW keeps the HUD under every normal window but above the wallpaper,
+/// STICKY shows it on all workspaces, and SKIP_TASKBAR/SKIP_PAGER take it out
+/// of the switcher — the equivalents of the macOS collection behaviour and the
+/// Windows tool-window + bottom clamp. All four are ordinary, supported paths
+/// (they appear in Mutter's `_NET_SUPPORTED`), the window stays managed, and
+/// BELOW is a persistent layer rather than a per-raise decision — so unlike the
+/// Windows path no watcher is needed to stop a click from raising the HUD.
+///
+/// X11 only. Under Wayland the webview has no X window; COSMIC's layer-shell is
+/// the mechanism there, and GNOME/Wayland offers none at all.
+#[cfg(target_os = "linux")]
+mod x11_desktop {
+    use std::error::Error;
+    use std::sync::Mutex;
+    use x11rb::connection::Connection as _;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, Window,
+    };
+    use x11rb::rust_connection::RustConnection;
+
+    type Res<T> = Result<T, Box<dyn Error>>;
+
+    const ADD: u32 = 1;
+    const REMOVE: u32 = 0;
+    /// _NET_WM_STATE source indication: 1 = normal application.
+    const SOURCE_APP: u32 = 1;
+
+    struct Conn {
+        conn: RustConnection,
+        root: Window,
+        net_wm_state: u32,
+        net_wm_pid: u32,
+        net_client_list: u32,
+        below: u32,
+        above: u32,
+        sticky: u32,
+        skip_taskbar: u32,
+        skip_pager: u32,
+    }
+
+    impl Conn {
+        fn open() -> Res<Conn> {
+            let (conn, screen) = x11rb::connect(None)?;
+            let root = conn.setup().roots[screen].root;
+            let intern = |name: &str| -> Res<u32> {
+                Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)
+            };
+            Ok(Conn {
+                net_wm_state: intern("_NET_WM_STATE")?,
+                net_wm_pid: intern("_NET_WM_PID")?,
+                net_client_list: intern("_NET_CLIENT_LIST")?,
+                below: intern("_NET_WM_STATE_BELOW")?,
+                above: intern("_NET_WM_STATE_ABOVE")?,
+                sticky: intern("_NET_WM_STATE_STICKY")?,
+                skip_taskbar: intern("_NET_WM_STATE_SKIP_TASKBAR")?,
+                skip_pager: intern("_NET_WM_STATE_SKIP_PAGER")?,
+                conn,
+                root,
+            })
+        }
+
+        /// Our own toplevel, found by matching `_NET_WM_PID` against this
+        /// process across `_NET_CLIENT_LIST`. Going through the X server rather
+        /// than `WebviewWindow::gtk_window()` keeps the `gtk` crate (and the
+        /// job of matching the exact version tauri links) out of the build.
+        /// Only managed, mapped windows are listed, which is also exactly when
+        /// a `_NET_WM_STATE` client message is the correct way to set state.
+        fn find_toplevel(&self) -> Res<Option<Window>> {
+            let pid = std::process::id();
+            let list = self
+                .conn
+                .get_property(
+                    false,
+                    self.root,
+                    self.net_client_list,
+                    AtomEnum::WINDOW,
+                    0,
+                    // In 32-bit units: far more toplevels than a session has,
+                    // and well clear of any server-side length overflow.
+                    1024,
+                )?
+                .reply()?;
+            let Some(windows) = list.value32() else {
+                return Ok(None);
+            };
+            for w in windows {
+                let prop = self
+                    .conn
+                    .get_property(false, w, self.net_wm_pid, AtomEnum::CARDINAL, 0, 1)?
+                    .reply()?;
+                if prop.value32().and_then(|mut v| v.next()) == Some(pid) {
+                    return Ok(Some(w));
+                }
+            }
+            Ok(None)
+        }
+
+        /// EWMH `_NET_WM_STATE` request. A mapped, managed window's state is
+        /// changed by asking the WM with a client message to the root, not by
+        /// writing the property directly.
+        fn set_state(&self, window: Window, action: u32, first: u32, second: u32) -> Res<()> {
+            let event = ClientMessageEvent::new(
+                32,
+                window,
+                self.net_wm_state,
+                [action, first, second, SOURCE_APP, 0],
+            );
+            self.conn.send_event(
+                false,
+                self.root,
+                EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT,
+                event,
+            )?;
+            self.conn.flush()?;
+            Ok(())
+        }
+    }
+
+    /// The resolved toplevel, cached so the pin toggle doesn't re-scan the
+    /// client list on every call.
+    static HUD: Mutex<Option<Window>> = Mutex::new(None);
+
+    fn warn(msg: &str) {
+        eprintln!("desktop layer x11: {msg}");
+    }
+
+    /// True when the session is a real X11 one. Under Wayland the webview is a
+    /// Wayland surface with no X window to address, and XWayland would only
+    /// ever hand back some other client's.
+    pub fn available() -> bool {
+        std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some()
+    }
+
+    /// Apply the desktop-layer states. The window is not in `_NET_CLIENT_LIST`
+    /// until Mutter has managed it, which has not necessarily happened by the
+    /// time tauri's setup hook runs, so this retries briefly before giving up.
+    pub fn init() {
+        tauri::async_runtime::spawn(async move {
+            let conn = match Conn::open() {
+                Ok(c) => c,
+                Err(e) => return warn(&format!("connect failed: {e} — HUD stays a normal window")),
+            };
+            let mut window = None;
+            for _ in 0..50 {
+                match conn.find_toplevel() {
+                    Ok(Some(w)) => {
+                        window = Some(w);
+                        break;
+                    }
+                    Ok(None) => {}
+                    Err(e) => return warn(&format!("client list unreadable: {e}")),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let Some(w) = window else {
+                return warn("own window never appeared in _NET_CLIENT_LIST — HUD stays a normal window");
+            };
+            *HUD.lock().unwrap() = Some(w);
+            // Two atoms travel per request, so this is two calls, not four.
+            let states = [
+                (conn.below, conn.sticky),
+                (conn.skip_taskbar, conn.skip_pager),
+            ];
+            for (a, b) in states {
+                if let Err(e) = conn.set_state(w, ADD, a, b) {
+                    warn(&format!("setting state failed: {e}"));
+                }
+            }
+        });
+    }
+
+    /// Pin above every app window, or drop back to the desktop layer. BELOW and
+    /// ABOVE are mutually exclusive in the WM, but it will not infer that from
+    /// one being added — the other has to be removed explicitly.
+    pub fn set_overlay(above: bool) {
+        let Some(w) = *HUD.lock().unwrap() else {
+            return warn("pin toggled before the window was resolved — ignored");
+        };
+        let conn = match Conn::open() {
+            Ok(c) => c,
+            Err(e) => return warn(&format!("connect failed: {e}")),
+        };
+        let (add, remove) = if above {
+            (conn.above, conn.below)
+        } else {
+            (conn.below, conn.above)
+        };
+        if let Err(e) = conn
+            .set_state(w, REMOVE, remove, 0)
+            .and_then(|()| conn.set_state(w, ADD, add, 0))
+        {
+            warn(&format!("pin toggle failed: {e}"));
         }
     }
 }
