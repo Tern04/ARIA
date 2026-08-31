@@ -380,9 +380,22 @@ function renderDiscord() {
     }
   }
 
+  // Discord gives bots no way to read *your* friends list, so the watched
+  // people are added by hand. Without this the widget just showed nothing and
+  // looked broken.
+  const friendsHint = () => {
+    const hint = document.createElement("div");
+    hint.className = "dc-friends-hint";
+    hint.textContent = "no friends tracked — add them via ✎ edit mode → ⚙";
+    hint.title =
+      "Right-click a user in Discord → Copy User ID, then add them in the widget's settings. " +
+      "They must share a watched server, and the bot needs the Presence intent.";
+    return hint;
+  };
+
   // Large: channels left, friends as a full column right (status dot,
   // name, current game/song per row) — more detail than the m strip.
-  if (size === "l" && p.friends.length > 0) {
+  if (size === "l") {
     const cols = document.createElement("div");
     cols.className = "dc-cols";
     const left = document.createElement("div");
@@ -395,6 +408,7 @@ function renderDiscord() {
     label.textContent = "FRIENDS";
     const col = document.createElement("div");
     col.className = "dc-friend-col fill-list";
+    if (p.friends.length === 0) col.append(friendsHint());
     for (const f of p.friends) {
       const row = document.createElement("div");
       row.className = "dc-friend-row";
@@ -421,7 +435,9 @@ function renderDiscord() {
 
   body.append(list);
 
-  if (p.friends.length > 0) {
+  if (p.friends.length === 0) {
+    body.append(friendsHint());
+  } else {
     const friends = document.createElement("div");
     friends.className = "dc-friends";
     for (const f of p.friends) {

@@ -606,6 +606,10 @@ fn build_state(set: &GuildSet, cfg: &DiscordConfig) -> DiscordState {
     let friends = cfg
         .friends
         .iter()
+        // discord.json ships a blank {id:"", name:""} row as a template (see
+        // load_config). Every other path drops it; without this the widget
+        // renders a phantom nameless "offline" chip.
+        .filter(|f| !f.id.is_empty())
         .map(|f| {
             let (status, activity) = set
                 .presence
