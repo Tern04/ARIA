@@ -452,11 +452,14 @@ mod win_desktop {
 #[cfg(target_os = "linux")]
 mod x11_desktop {
     use std::error::Error;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
     use x11rb::connection::Connection as _;
     use x11rb::protocol::xproto::{
-        AtomEnum, ClientMessageEvent, ConnectionExt as _, EventMask, Window,
+        AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt as _, EventMask,
+        Window,
     };
+    use x11rb::protocol::Event;
     use x11rb::rust_connection::RustConnection;
 
     type Res<T> = Result<T, Box<dyn Error>>;
@@ -561,6 +564,10 @@ mod x11_desktop {
     /// client list on every call.
     static HUD: Mutex<Option<Window>> = Mutex::new(None);
 
+    /// Which layer the HUD is supposed to be on. The watcher restores states
+    /// toward this, so re-asserting can never undo the pin toggle.
+    static WANT_ABOVE: AtomicBool = AtomicBool::new(false);
+
     fn warn(msg: &str) {
         eprintln!("desktop layer x11: {msg}");
     }
@@ -597,17 +604,82 @@ mod x11_desktop {
                 return warn("own window never appeared in _NET_CLIENT_LIST — HUD stays a normal window");
             };
             *HUD.lock().unwrap() = Some(w);
-            // Two atoms travel per request, so this is two calls, not four.
-            let states = [
-                (conn.below, conn.sticky),
-                (conn.skip_taskbar, conn.skip_pager),
-            ];
-            for (a, b) in states {
-                if let Err(e) = conn.set_state(w, ADD, a, b) {
-                    warn(&format!("setting state failed: {e}"));
+            apply(&conn, w);
+            watch(w);
+        });
+    }
+
+    /// Put the HUD on its desired layer. Two atoms travel per request, so this
+    /// is two calls, not four.
+    fn apply(conn: &Conn, w: Window) {
+        let layer = if WANT_ABOVE.load(Ordering::Relaxed) {
+            conn.above
+        } else {
+            conn.below
+        };
+        for (a, b) in [(layer, conn.sticky), (conn.skip_taskbar, conn.skip_pager)] {
+            if let Err(e) = conn.set_state(w, ADD, a, b) {
+                warn(&format!("setting state failed: {e}"));
+            }
+        }
+    }
+
+    /// Restore the desktop-layer states whenever the WM drops them.
+    ///
+    /// Mutter converts a request for a monitor-sized undecorated window into
+    /// fullscreen, and that conversion resets `_NET_WM_STATE` — so restoring a
+    /// filled window at startup, or turning Fill screen on, silently undid the
+    /// layer. (Toggling fullscreen on a settled window does *not* clear it,
+    /// which is why this only showed up on the fill path.)
+    ///
+    /// Unlike the position watcher that made the `_NET_WM_WINDOW_TYPE_DESKTOP`
+    /// attempt unusable, this cannot feed itself: re-adding a state moves
+    /// nothing, and the re-assert is skipped unless something is actually
+    /// missing, so the PropertyNotify our own change produces ends the cycle.
+    fn watch(w: Window) {
+        std::thread::spawn(move || {
+            let conn = match Conn::open() {
+                Ok(c) => c,
+                Err(e) => return warn(&format!("state watch: connect failed: {e}")),
+            };
+            let aux = ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE);
+            let observed = conn
+                .conn
+                .change_window_attributes(w, &aux)
+                .map_err(|e| e.to_string())
+                .and_then(|c| c.check().map_err(|e| e.to_string()));
+            if let Err(e) = observed {
+                return warn(&format!("state watch: cannot observe the window: {e}"));
+            }
+            loop {
+                match conn.conn.wait_for_event() {
+                    Ok(Event::PropertyNotify(e)) if e.atom == conn.net_wm_state => {
+                        if missing(&conn, w).unwrap_or(false) {
+                            apply(&conn, w);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => return warn(&format!("state watch ended: {e}")),
                 }
             }
         });
+    }
+
+    /// Whether any state the desktop layer depends on has been dropped.
+    fn missing(conn: &Conn, w: Window) -> Result<bool, Box<dyn Error>> {
+        let prop = conn
+            .conn
+            .get_property(false, w, conn.net_wm_state, AtomEnum::ATOM, 0, 32)?
+            .reply()?;
+        let held: Vec<u32> = prop.value32().map(Iterator::collect).unwrap_or_default();
+        let layer = if WANT_ABOVE.load(Ordering::Relaxed) {
+            conn.above
+        } else {
+            conn.below
+        };
+        Ok([layer, conn.sticky, conn.skip_taskbar, conn.skip_pager]
+            .iter()
+            .any(|a| !held.contains(a)))
     }
 
     /// Pin above every app window, or drop back to the desktop layer. BELOW and
@@ -621,6 +693,7 @@ mod x11_desktop {
             Ok(c) => c,
             Err(e) => return warn(&format!("connect failed: {e}")),
         };
+        WANT_ABOVE.store(above, Ordering::Relaxed);
         let (add, remove) = if above {
             (conn.above, conn.below)
         } else {
