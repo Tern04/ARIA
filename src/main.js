@@ -1080,7 +1080,6 @@ function renderMusic() {
   const artist = document.getElementById("music-artist");
   const album = document.getElementById("music-album");
   const art = document.getElementById("music-art");
-  const progress = document.getElementById("music-progress");
   const controls = document.getElementById("music-controls");
   const playing = p.status === "playing";
   const active = playing || p.status === "paused";
@@ -1094,13 +1093,17 @@ function renderMusic() {
     album.textContent = albumText;
     album.hidden = !albumText;
     if (p.art) {
+      // A cover that fails to decode would otherwise leave an invisible
+      // 72–140 px hole where the art should be.
+      art.onerror = () => {
+        art.hidden = true;
+      };
       art.src = p.art;
       art.hidden = false;
     } else {
       art.hidden = true;
       art.removeAttribute("src");
     }
-    progress.hidden = !(p.duration_secs > 0);
     controls.classList.remove("music-controls--idle");
   } else {
     title.textContent = "Nothing playing";
@@ -1108,7 +1111,6 @@ function renderMusic() {
     album.hidden = true;
     art.hidden = true;
     art.removeAttribute("src");
-    progress.hidden = true;
     controls.classList.add("music-controls--idle");
   }
   // Play glyph when paused/stopped, pause glyph when playing.

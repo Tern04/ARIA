@@ -2,7 +2,12 @@ use serde::Serialize;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
-const POLL: Duration = Duration::from_secs(10);
+/// Poll cadence. A playing track drives a 1 s progress readout, so sampling it
+/// every 10 s made every correction a visible jump; 3 s keeps the client-side
+/// extrapolation short enough to be invisible. Nothing is moving otherwise, so
+/// an idle/paused player is polled lazily.
+const POLL_PLAYING: Duration = Duration::from_secs(3);
+const POLL_IDLE: Duration = Duration::from_secs(10);
 
 #[derive(Serialize, Clone, Default)]
 struct NowPlaying {
@@ -11,8 +16,15 @@ struct NowPlaying {
     album: String,
     /// Friendly source-app name ("Spotify", "Chrome"…), when identifiable.
     app_name: Option<String>,
-    position_secs: u64,
+    /// Fractional seconds — truncating to whole seconds biased the readout up
+    /// to 1 s low on every sample.
+    position_secs: f64,
     duration_secs: u64,
+    /// False when the player exposes no usable position — either the query
+    /// fails outright, or it "succeeds" while never advancing (some browser
+    /// media sessions just answer 0 forever). The widget hides the progress
+    /// row rather than free-running a counter that means nothing.
+    position_known: bool,
     /// Album art as a data: URL (Windows SMTC thumbnail; None elsewhere).
     art: Option<String>,
 }
@@ -224,9 +236,12 @@ fn sample_music() -> MusicState {
                 if end > 0 {
                     pos = pos.min(end);
                 }
-                ((pos / 10_000_000).max(0) as u64, (end / 10_000_000).max(0) as u64)
+                (
+                    pos.max(0) as f64 / 10_000_000.0,
+                    (end / 10_000_000).max(0) as u64,
+                )
             })
-            .unwrap_or((0, 0));
+            .unwrap_or((0.0, 0));
         let now = NowPlaying {
             album: props.AlbumTitle().map(|s| s.to_string()).unwrap_or_default(),
             app_name: session
@@ -235,6 +250,9 @@ fn sample_music() -> MusicState {
                 .and_then(|id| friendly_app_name(&id.to_string())),
             position_secs,
             duration_secs,
+            // SMTC always carries a timeline; a zero length means the source
+            // published none, which is the same thing as "no position".
+            position_known: duration_secs > 0,
             art: thumbnail_data_url(&props, &title, &artist),
             title,
             artist,
@@ -378,10 +396,14 @@ pub fn spawn(app: AppHandle) {
             let state = tauri::async_runtime::spawn_blocking(sample_music)
                 .await
                 .unwrap_or(MusicState::Stopped);
+            let next = match state {
+                MusicState::Playing(_) => POLL_PLAYING,
+                _ => POLL_IDLE,
+            };
             if let Err(e) = app.emit("music", state) {
                 eprintln!("music emit failed: {e}");
             }
-            tokio::time::sleep(POLL).await;
+            tokio::time::sleep(next).await;
         }
     });
 }
@@ -394,56 +416,285 @@ pub fn spawn(_app: AppHandle) {}
 /// keys drive, so it covers Spotify, VLC and any browser tab (Firefox, Opera…)
 /// exposing a media session. When `playerctl` is missing or no player is
 /// running the commands fail and we report Stopped, exactly like the old stub.
+/// One `playerctl metadata` line, split out so it can be unit-tested.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq)]
+struct Meta {
+    status: String,
+    player: String,
+    title: String,
+    artist: String,
+    album: String,
+    length_us: u64,
+    art_url: String,
+}
+
+/// Parse the unit-separator-delimited sample line. Returns None when the line
+/// describes nothing playable, so the caller can report Stopped.
+#[cfg(target_os = "linux")]
+fn parse_metadata_line(line: &str) -> Option<Meta> {
+    let mut f = line.split('\x1f');
+    let status = f.next().unwrap_or("").trim().to_string();
+    let player = f.next().unwrap_or("").trim().to_string();
+    let title = f.next().unwrap_or("").trim().to_string();
+    let artist = f.next().unwrap_or("").trim().to_string();
+    let album = f.next().unwrap_or("").trim().to_string();
+    let length_us: u64 = f.next().unwrap_or("").trim().parse().unwrap_or(0);
+    let art_url = f.next().unwrap_or("").trim().to_string();
+    if title.is_empty() || !matches!(status.as_str(), "Playing" | "Paused") {
+        return None;
+    }
+    Some(Meta { status, player, title, artist, album, length_us, art_url })
+}
+
+/// Pick which MPRIS player to report on.
+///
+/// `playerctl` with no `--player` answers from whichever bus it finds first,
+/// and prefers `playerctld` when that daemon is running — a proxy that keeps
+/// answering for a player which has since gone away, so the widget can end up
+/// showing a track from hours ago. Choose deliberately instead: something
+/// actually Playing beats something merely Paused, and the proxy is skipped so
+/// we always talk to a real player.
+#[cfg(target_os = "linux")]
+fn pick_player() -> Option<String> {
+    let list = run_playerctl(&["-l"]).ok()?;
+    let mut paused = None;
+    for name in list.lines().map(str::trim).filter(|n| !n.is_empty()) {
+        if name == "playerctld" {
+            continue; // the proxy, not a player
+        }
+        match run_playerctl(&["--player", name, "status"]).as_deref() {
+            Ok("Playing") => return Some(name.to_string()),
+            Ok("Paused") if paused.is_none() => paused = Some(name.to_string()),
+            _ => {}
+        }
+    }
+    paused
+}
+
 #[cfg(target_os = "linux")]
 fn sample_music() -> MusicState {
     // One unit-separator-delimited line keeps every field from one consistent
     // sample; \x1f never appears in titles. Position isn't metadata, so it is
     // fetched separately below.
     const FMT: &str = "{{status}}\x1f{{playerName}}\x1f{{title}}\x1f{{artist}}\x1f{{album}}\x1f{{mpris:length}}\x1f{{mpris:artUrl}}";
-    let Ok(line) = run_playerctl(&["metadata", "--format", FMT]) else {
+    let Some(player) = pick_player() else {
         return MusicState::Stopped; // no player / playerctl absent
     };
-    let mut f = line.split('\x1f');
-    let status = f.next().unwrap_or("").trim();
-    let player = f.next().unwrap_or("").trim();
-    let title = f.next().unwrap_or("").trim();
-    let artist = f.next().unwrap_or("").trim();
-    let album = f.next().unwrap_or("").trim();
-    let length_us: u64 = f.next().unwrap_or("").trim().parse().unwrap_or(0);
-    let art_url = f.next().unwrap_or("").trim();
-
-    if title.is_empty() || !matches!(status, "Playing" | "Paused") {
+    let Ok(line) = run_playerctl(&["--player", &player, "metadata", "--format", FMT]) else {
         return MusicState::Stopped;
-    }
+    };
+    let Some(m) = parse_metadata_line(&line) else {
+        return MusicState::Stopped;
+    };
 
-    // `playerctl position` prints float seconds; clamp to the track length so
-    // the bar never overshoots when the two calls straddle a tick.
-    let duration_secs = length_us / 1_000_000;
-    let mut position_secs = run_playerctl(&["position"])
+    // Resolve the cover *before* reading the position. Art can involve disk or
+    // network I/O, and anything between the position read and the emit shows up
+    // as the widget's clock starting behind. `art_for` never blocks — a cache
+    // miss is fetched on a background thread and picked up by the next poll.
+    let art = art_for(&m.art_url, &m.title, &m.artist);
+
+    // `playerctl position` prints float seconds, read from the same player the
+    // metadata came from so several MPRIS buses (a browser tab plus Spotify)
+    // can't cross-wire the title and the clock.
+    let duration_secs = m.length_us / 1_000_000;
+    let sampled = run_playerctl(&["--player", &player, "position"])
         .ok()
         .and_then(|s| s.trim().parse::<f64>().ok())
-        .map(|v| v.max(0.0) as u64)
-        .unwrap_or(0);
-    if duration_secs > 0 {
-        position_secs = position_secs.min(duration_secs);
+        .filter(|v| v.is_finite());
+    // Both of these carry state across samples, so they must run every time,
+    // not only when their answer gets used.
+    let live = sampled.is_some_and(|p| position_is_live(&m.title, &m.artist, &m.status, p));
+    let derived = sampled.and_then(|p| track_elapsed(&player, &m.title, &m.artist, p));
+
+    let (mut position_secs, position_known) = match sampled {
+        // The player has no Position property at all.
+        None => (0.0, false),
+        // A player that reports a real track-relative position: trust it.
+        Some(p) if duration_secs > 0 && position_fits_track(p, duration_secs) => {
+            (p.max(0.0), live)
+        }
+        // Otherwise the position can't belong to this track (or there's no
+        // length to check it against), so recover the elapsed time from the
+        // session clock — see track_elapsed.
+        Some(_) => match derived {
+            Some(elapsed) => (elapsed.max(0.0), live),
+            None => (0.0, false),
+        },
+    };
+    // Only once the value is known to belong to this track: clamp so the bar
+    // can't overshoot when the two calls straddle a tick.
+    if position_known && duration_secs > 0 {
+        position_secs = position_secs.min(duration_secs as f64);
     }
 
     let now = NowPlaying {
-        app_name: friendly_player_name(player),
+        app_name: friendly_player_name(&m.player),
         position_secs,
         duration_secs,
+        position_known,
         // The CSP only allows `data:` images, so everything is inlined:
         // Chromium browsers publish a local file:// cover, Spotify an https one.
-        art: resolve_art(art_url, title, artist),
-        title: title.to_string(),
-        artist: artist.to_string(),
-        album: album.to_string(),
+        art,
+        title: m.title,
+        artist: m.artist,
+        album: m.album,
     };
-    if status == "Playing" {
+    if m.status == "Playing" {
         MusicState::Playing(now)
     } else {
         MusicState::Paused(now)
     }
+}
+
+/// Recovers a track-relative elapsed time from a session-cumulative clock.
+///
+/// Players like Firefox report a position that counts the whole listening
+/// session rather than the current track, and publish no track length at all.
+/// The clock itself is sound though — measured against Apple Music web it
+/// advances at exactly 1x and runs straight through a track change without a
+/// blip (…19618, 19620, [title changes], 19622, 19624…). So the elapsed time
+/// within a track is simply the distance from where that clock stood when the
+/// title last changed.
+///
+/// The catch is that it only works from a change we actually witnessed:
+/// joining mid-track says nothing about how far in we already are, so that
+/// reports unknown rather than a confident and wrong 0:00. The *length* of a
+/// track is genuinely not recoverable this way — it can only be known once the
+/// track has ended, which is too late to draw a bar with.
+#[cfg(target_os = "linux")]
+struct SessionClock {
+    player: String,
+    track: (String, String),
+    /// Where the session clock stood when this track started.
+    anchor: f64,
+    /// False until a track change is observed, i.e. until `anchor` is real.
+    anchored: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn track_elapsed(player: &str, title: &str, artist: &str, position: f64) -> Option<f64> {
+    static CLOCK: std::sync::Mutex<Option<SessionClock>> = std::sync::Mutex::new(None);
+    let mut clock = CLOCK.lock().ok()?;
+    let track = (title.to_string(), artist.to_string());
+
+    if let Some(c) = clock.as_mut() {
+        if c.player == player && c.track == track {
+            // A backwards jump means the session clock itself restarted (the
+            // player was relaunched); re-anchor and admit we don't know.
+            if position < c.anchor {
+                c.anchor = position;
+                c.anchored = false;
+            }
+            return c.anchored.then_some(position - c.anchor);
+        }
+    }
+
+    // A different track. If we were already following this player then the
+    // change we just saw *is* the anchor, and elapsed starts from zero.
+    let anchored = clock.as_ref().is_some_and(|c| c.player == player);
+    *clock = Some(SessionClock {
+        player: player.to_string(),
+        track,
+        anchor: position,
+        anchored,
+    });
+    anchored.then_some(0.0)
+}
+
+/// Slack for the gap between reading the metadata and reading the position.
+#[cfg(target_os = "linux")]
+const POSITION_OVERSHOOT_TOLERANCE: f64 = 2.0;
+
+/// Whether a reported position can plausibly belong to the current track.
+///
+/// Browser media sessions are the problem case: Firefox playing Apple Music
+/// reports a `Position` that counts the whole *listening session* rather than
+/// the track (observed at 18 870 s — five hours — advancing at 1× and never
+/// resetting between tracks), and publishes no `mpris:length` at all. Clamping
+/// such a value into the last known duration is worse than useless: it turns
+/// nonsense into a believable readout, which is how the widget ended up
+/// showing the running time of a film watched hours earlier.
+///
+/// With no duration there is nothing to contradict, so the value is taken at
+/// face value — the progress row is hidden anyway.
+#[cfg(target_os = "linux")]
+fn position_fits_track(position: f64, duration_secs: u64) -> bool {
+    duration_secs == 0 || position <= duration_secs as f64 + POSITION_OVERSHOOT_TOLERANCE
+}
+
+/// A playing track whose position isn't keeping up with the wall clock this
+/// many samples running isn't really reporting a position. At the 3 s playing
+/// poll that is ~9 s of "progress" that went nowhere, which no working player
+/// does — but a stuck media session does it forever.
+#[cfg(target_os = "linux")]
+const STALE_POSITION_SAMPLES: u8 = 3;
+
+/// Samples closer together than this can't be judged — the difference is in
+/// the noise of two `playerctl` process spawns.
+#[cfg(target_os = "linux")]
+const MIN_JUDGEABLE_GAP: f64 = 0.5;
+
+/// A playing track must advance at roughly wall-clock rate. A generous
+/// fraction of it absorbs slow polls and playback rates below 1×, while still
+/// catching a position that is standing still (or going backwards).
+///
+/// Note this can't be an equality check: `playerctl position` interpolates
+/// from when it read the property, so even a player frozen at zero answers
+/// 0.000004, 0.000006, … — never the same number twice.
+#[cfg(target_os = "linux")]
+const MIN_ADVANCE_RATIO: f64 = 0.25;
+
+/// Pure half of `position_is_live`: the new consecutive-stall count.
+#[cfg(target_os = "linux")]
+fn stall_count(prev_pos: f64, pos: f64, elapsed: f64, prev_stalls: u8) -> u8 {
+    if pos - prev_pos < elapsed * MIN_ADVANCE_RATIO {
+        prev_stalls.saturating_add(1)
+    } else {
+        0
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct PositionSample {
+    title: String,
+    artist: String,
+    pos: f64,
+    at: std::time::Instant,
+    stalls: u8,
+}
+
+/// Whether the position we just read is actually moving. Paused tracks are
+/// exempt (holding still is the whole point), as is any track change.
+#[cfg(target_os = "linux")]
+fn position_is_live(title: &str, artist: &str, status: &str, pos: f64) -> bool {
+    static LAST: std::sync::Mutex<Option<PositionSample>> = std::sync::Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else {
+        return true; // never hide the bar over a lock we couldn't take
+    };
+    if status != "Playing" {
+        *last = None; // resuming starts a fresh judgement
+        return true;
+    }
+    let now = std::time::Instant::now();
+    let stalls = match last.as_ref() {
+        Some(p) if p.title == title && p.artist == artist => {
+            let elapsed = now.duration_since(p.at).as_secs_f64();
+            if elapsed < MIN_JUDGEABLE_GAP {
+                return p.stalls < STALE_POSITION_SAMPLES; // keep the old baseline
+            }
+            stall_count(p.pos, pos, elapsed, p.stalls)
+        }
+        _ => 0,
+    };
+    *last = Some(PositionSample {
+        title: title.to_string(),
+        artist: artist.to_string(),
+        pos,
+        at: now,
+        stalls,
+    });
+    stalls < STALE_POSITION_SAMPLES
 }
 
 /// MPRIS player-bus names ("firefox", "spotify", "chromium") → a display label.
@@ -479,71 +730,134 @@ fn friendly_player_name(player: &str) -> Option<String> {
 /// Cover art as an inlined `data:` URL (the CSP forbids remote images). Handles
 /// the three shapes MPRIS players publish: an already-inlined `data:` URI, a
 /// local `file://` path (Chromium caches the cover to disk), or a remote
-/// `http(s)` URL (Spotify, some sites). Cached per track — the poll runs every
-/// 10 s and the art is by far the heaviest field to move.
+/// `http(s)` URL (Spotify, some sites).
+///
+/// Never blocks: a cache hit returns immediately, a miss starts a background
+/// fetch and returns None so the caller can go on to sample the position and
+/// emit. The following poll (≤3 s) picks up the cached result. Art used to be
+/// fetched inline, which parked the poll for up to 5 s *between* reading the
+/// position and emitting it — the widget's clock then started that far behind.
 #[cfg(target_os = "linux")]
-fn resolve_art(art_url: &str, title: &str, artist: &str) -> Option<String> {
-    use std::sync::Mutex;
-
+fn art_for(art_url: &str, title: &str, artist: &str) -> Option<String> {
     if art_url.is_empty() {
         return None;
     }
     if art_url.starts_with("data:") {
         return Some(art_url.to_string()); // already inlined
     }
-
-    static CACHE: Mutex<Option<((String, String), Option<String>)>> = Mutex::new(None);
     let key = (title.to_string(), artist.to_string());
-    if let Ok(cache) = CACHE.lock() {
-        if let Some((k, art)) = cache.as_ref() {
-            if *k == key {
-                return art.clone();
-            }
-        }
+    if let Some(hit) = art_cache_get(&key) {
+        return hit;
     }
+    spawn_art_fetch(art_url.to_string(), key);
+    None
+}
 
-    let art = fetch_art_bytes(art_url).map(|(mime, bytes)| {
-        format!("data:{mime};base64,{}", base64(&bytes))
-    });
-    if let Ok(mut cache) = CACHE.lock() {
-        *cache = Some((key, art.clone()));
+/// Bounded per-track cache. A single entry made alternating tracks (a queue
+/// bouncing between two, or a paused player re-sampled next to a playing one)
+/// re-download the cover on every poll.
+#[cfg(target_os = "linux")]
+const ART_CACHE_MAX: usize = 8;
+
+#[cfg(target_os = "linux")]
+type ArtKey = (String, String);
+
+#[cfg(target_os = "linux")]
+static ART_CACHE: std::sync::Mutex<Vec<(ArtKey, Option<String>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// `Some(entry)` when the track has been resolved (the inner Option is None if
+/// it genuinely has no usable cover); `None` when it has never been fetched.
+#[cfg(target_os = "linux")]
+fn art_cache_get(key: &ArtKey) -> Option<Option<String>> {
+    let cache = ART_CACHE.lock().ok()?;
+    cache.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+}
+
+#[cfg(target_os = "linux")]
+fn art_cache_put(key: ArtKey, art: Option<String>) {
+    if let Ok(mut cache) = ART_CACHE.lock() {
+        cache.retain(|(k, _)| *k != key);
+        cache.push((key, art));
+        let overflow = cache.len().saturating_sub(ART_CACHE_MAX);
+        cache.drain(..overflow);
     }
-    art
+}
+
+/// Fetch a cover off the poll thread, de-duplicated so a slow host can't stack
+/// one request per poll for the same track.
+#[cfg(target_os = "linux")]
+fn spawn_art_fetch(art_url: String, key: ArtKey) {
+    static IN_FLIGHT: std::sync::Mutex<Vec<ArtKey>> = std::sync::Mutex::new(Vec::new());
+    {
+        let Ok(mut flight) = IN_FLIGHT.lock() else { return };
+        if flight.contains(&key) {
+            return;
+        }
+        flight.push(key.clone());
+    }
+    std::thread::spawn(move || {
+        let art = match fetch_art_bytes(&art_url) {
+            Ok((mime, bytes)) => Some(format!("data:{mime};base64,{}", base64(&bytes))),
+            Err(e) => {
+                // Cached as None either way, so this can't retry-loop; but a
+                // silently missing cover is impossible to diagnose otherwise.
+                eprintln!("music art: {art_url}: {e}");
+                None
+            }
+        };
+        art_cache_put(key.clone(), art);
+        if let Ok(mut flight) = IN_FLIGHT.lock() {
+            flight.retain(|k| *k != key);
+        }
+    });
 }
 
 /// Load the raw cover bytes + mime for a `file://` or `http(s)` art URL.
-/// Returns None on any failure so a missing cover just leaves the art blank.
+/// The error is returned rather than swallowed so a cover that never appears
+/// can be explained (see `spawn_art_fetch`).
 #[cfg(target_os = "linux")]
-fn fetch_art_bytes(art_url: &str) -> Option<(String, Vec<u8>)> {
+fn fetch_art_bytes(art_url: &str) -> Result<(String, Vec<u8>), String> {
     const MAX: usize = 3_000_000; // guard against an unreasonably large cover
     let bytes: Vec<u8> = if let Some(path) = art_url.strip_prefix("file://") {
         let decoded = percent_decode(path);
-        let data = std::fs::read(&decoded).ok()?;
+        let data = std::fs::read(&decoded).map_err(|e| e.to_string())?;
         if data.is_empty() || data.len() > MAX {
-            return None;
+            return Err(format!("{} bytes is not a usable cover", data.len()));
         }
         data
     } else if art_url.starts_with("http") {
-        // sample_music runs on a blocking thread, so driving the async client
-        // to completion here is safe (no nested-runtime reentry).
+        // This runs on its own thread, so the async client is driven to
+        // completion with a private single-threaded runtime rather than
+        // borrowing Tauri's (block_on from a non-runtime thread is not safe to
+        // rely on, and a cover fetch has no business occupying a worker).
         let url = art_url.to_string();
-        tauri::async_runtime::block_on(async move {
-            // Bounded so a slow/hanging cover host can't stall the poll loop.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| e.to_string())?;
+        rt.block_on(async move {
+            // Bounded so a slow/hanging cover host can't wedge the fetch.
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
-                .ok()?;
-            let resp = client.get(&url).send().await.ok()?;
-            let data = resp.bytes().await.ok()?;
-            if data.is_empty() || data.len() > MAX {
-                return None;
+                .map_err(|e| e.to_string())?;
+            let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+            // Without this an error page is happily base64'd and handed to the
+            // <img> as a bogus JPEG.
+            if !resp.status().is_success() {
+                return Err(format!("HTTP {}", resp.status()));
             }
-            Some(data.to_vec())
+            let data = resp.bytes().await.map_err(|e| e.to_string())?;
+            if data.is_empty() || data.len() > MAX {
+                return Err(format!("{} bytes is not a usable cover", data.len()));
+            }
+            Ok(data.to_vec())
         })?
     } else {
-        return None; // unknown scheme
+        return Err("unsupported art URL scheme".into());
     };
-    Some((sniff_image_mime(&bytes).to_string(), bytes))
+    Ok((sniff_image_mime(&bytes).to_string(), bytes))
 }
 
 /// Mime from magic bytes; MPRIS art URLs carry no reliable content-type.
@@ -639,8 +953,9 @@ end tell"#;
             let now = NowPlaying {
                 album: lines.next().unwrap_or("").to_string(),
                 app_name: Some("Music".into()),
-                position_secs: lines.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+                position_secs: lines.next().and_then(|s| s.parse().ok()).unwrap_or(0.0),
                 duration_secs: lines.next().and_then(|s| s.parse().ok()).unwrap_or(0),
+                position_known: true, // AppleScript always reports player position
                 art: artwork_data_url(title, artist),
                 title: title.to_string(),
                 artist: artist.to_string(),
@@ -725,4 +1040,235 @@ fn music_is_running() -> bool {
     sys.processes()
         .values()
         .any(|p| p.name() == std::ffi::OsStr::new("Music"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    const FIELDS: usize = 7;
+
+    fn line(parts: &[&str]) -> String {
+        parts.join("\x1f")
+    }
+
+    #[test]
+    fn parses_a_full_sample() {
+        let m = parse_metadata_line(&line(&[
+            "Playing",
+            "spotify",
+            "Some Track",
+            "Some Artist",
+            "Some Album",
+            "215000000",
+            "https://i.scdn.co/image/abc",
+        ]))
+        .expect("a playing track parses");
+        assert_eq!(m.status, "Playing");
+        assert_eq!(m.player, "spotify");
+        assert_eq!(m.title, "Some Track");
+        assert_eq!(m.length_us, 215_000_000);
+        assert_eq!(m.art_url, "https://i.scdn.co/image/abc");
+    }
+
+    #[test]
+    fn long_titles_survive_intact() {
+        // The field separator is the reason titles are not truncated or
+        // re-split; a 500-char video title must come through byte-for-byte.
+        let title = "A ".repeat(250);
+        let m = parse_metadata_line(&line(&[
+            "Playing",
+            "firefox",
+            title.trim_end(),
+            "",
+            "",
+            "0",
+            "",
+        ]))
+        .expect("long titles parse");
+        assert_eq!(m.title, title.trim_end());
+        assert!(m.artist.is_empty());
+    }
+
+    #[test]
+    fn rejects_nothing_playable() {
+        // Stopped, and no title at all, both mean "report Stopped".
+        assert!(parse_metadata_line(&line(&["Stopped", "", "", "", "", "0", ""])).is_none());
+        assert!(parse_metadata_line(&line(&["Playing", "vlc", "", "", "", "0", ""])).is_none());
+        assert!(parse_metadata_line("").is_none());
+        // A truncated line must not panic, just fail the title check.
+        assert!(parse_metadata_line("Playing").is_none());
+    }
+
+    #[test]
+    fn missing_length_is_zero_not_an_error() {
+        // Firefox publishes no mpris:length for many sites.
+        let m = parse_metadata_line(&line(&["Paused", "firefox", "Netflix", "", "", "", ""]))
+            .expect("a paused track with no length still parses");
+        assert_eq!(m.length_us, 0);
+        assert_eq!(m.status, "Paused");
+    }
+
+    #[test]
+    fn format_string_and_parser_agree_on_field_count() {
+        // Guards against adding a field to one and not the other.
+        assert_eq!(line(&["a"; FIELDS]).split('\x1f').count(), FIELDS);
+    }
+
+    #[test]
+    fn session_clock_recovers_elapsed_across_a_track_change() {
+        // Replays the measured Firefox trace: one continuous 1x clock, no
+        // reset at the boundary (…19618, 19620, [title changes], 19622…).
+        let p = "firefox.instance_1_1414";
+
+        // Joining mid-track tells us nothing about how far in we are.
+        assert_eq!(track_elapsed(p, "A Different World", "Korn", 19618.0), None);
+        assert_eq!(track_elapsed(p, "A Different World", "Korn", 19620.0), None);
+
+        // The title change is the anchor: elapsed restarts from zero...
+        assert_eq!(track_elapsed(p, "HALLELUYAH", "Yzomandias", 19622.0), Some(0.0));
+        // ...and then tracks the session clock exactly.
+        assert_eq!(track_elapsed(p, "HALLELUYAH", "Yzomandias", 19624.0), Some(2.0));
+        assert_eq!(track_elapsed(p, "HALLELUYAH", "Yzomandias", 19680.0), Some(58.0));
+
+        // The next change re-anchors, it does not accumulate.
+        assert_eq!(track_elapsed(p, "Whistle", "Flo Rida", 19700.0), Some(0.0));
+        assert_eq!(track_elapsed(p, "Whistle", "Flo Rida", 19705.0), Some(5.0));
+
+        // A backwards jump means the player restarted its clock: re-anchor and
+        // stop claiming to know, rather than reporting a negative elapsed.
+        assert_eq!(track_elapsed(p, "Whistle", "Flo Rida", 3.0), None);
+        assert_eq!(track_elapsed(p, "Whistle", "Flo Rida", 9.0), None);
+
+        // A different player starts over with no anchor of its own.
+        assert_eq!(track_elapsed("spotify", "Whistle", "Flo Rida", 42.0), None);
+    }
+
+    #[test]
+    fn a_session_cumulative_position_is_rejected() {
+        // Firefox playing Apple Music reports the whole listening session, not
+        // the track: 18_870 s against a 44-minute film. Clamping that to the
+        // duration is what produced a believable but entirely wrong readout.
+        assert!(!position_fits_track(18_870.0, 2679));
+        // Normal playback is fine, including right at the end.
+        assert!(position_fits_track(0.0, 2679));
+        assert!(position_fits_track(2679.0, 2679));
+        // A little overshoot is just the gap between the two playerctl calls.
+        assert!(position_fits_track(2680.0, 2679));
+        assert!(!position_fits_track(2690.0, 2679));
+        // Nothing to contradict without a duration — the row is hidden anyway.
+        assert!(position_fits_track(18_870.0, 0));
+    }
+
+    #[test]
+    fn a_healthy_track_never_accrues_stalls() {
+        // 3 s of wall clock, 3 s of progress.
+        assert_eq!(stall_count(30.0, 33.0, 3.0, 0), 0);
+        // Even at half speed, which is well inside the tolerance.
+        assert_eq!(stall_count(30.0, 31.5, 3.0, 2), 0, "one good sample clears the count");
+    }
+
+    #[test]
+    fn a_frozen_position_accrues_stalls() {
+        // What --frozen-position produces: playerctl interpolates from its own
+        // read, so the value creeps by microseconds and is never twice the
+        // same — an equality check would miss this entirely.
+        let mut stalls = 0;
+        for (prev, now) in [(0.000004, 0.000006), (0.000006, 0.000005), (0.000005, 0.000009)] {
+            stalls = stall_count(prev, now, 3.0, stalls);
+        }
+        assert_eq!(stalls, STALE_POSITION_SAMPLES);
+        assert!(stalls >= STALE_POSITION_SAMPLES, "the progress row gets hidden");
+    }
+
+    #[test]
+    fn a_backwards_jump_counts_as_a_stall() {
+        assert_eq!(stall_count(120.0, 5.0, 3.0, 0), 1);
+    }
+
+    #[test]
+    fn stall_count_saturates_rather_than_wrapping() {
+        assert_eq!(stall_count(0.0, 0.0, 3.0, u8::MAX), u8::MAX);
+    }
+
+    #[test]
+    fn a_paused_track_may_hold_its_position_forever() {
+        for _ in 0..STALE_POSITION_SAMPLES * 3 {
+            assert!(position_is_live("Held", "Artist", "Paused", 61.0));
+        }
+    }
+
+    #[test]
+    fn changing_track_resets_the_judgement() {
+        for _ in 0..STALE_POSITION_SAMPLES + 2 {
+            let _ = position_is_live("First", "A", "Playing", 0.0);
+        }
+        assert!(
+            position_is_live("Second", "A", "Playing", 0.0),
+            "a new track starts with a clean slate"
+        );
+    }
+
+    #[test]
+    fn rapid_samples_are_not_judged() {
+        // Two samples microseconds apart say nothing about whether playback is
+        // advancing; a burst of them must not hide a working progress bar.
+        for _ in 0..STALE_POSITION_SAMPLES * 4 {
+            assert!(position_is_live("Fast", "A", "Playing", 12.0));
+        }
+    }
+
+    #[test]
+    fn friendly_player_names() {
+        assert_eq!(friendly_player_name("spotify").as_deref(), Some("Spotify"));
+        assert_eq!(
+            friendly_player_name("firefox.instance_1_2").as_deref(),
+            Some("Firefox")
+        );
+        assert_eq!(friendly_player_name("").as_deref(), None);
+        // Unknown players are title-cased rather than dropped.
+        assert_eq!(friendly_player_name("audacious").as_deref(), Some("Audacious"));
+    }
+
+    #[test]
+    fn sniffs_image_mime_from_magic_bytes() {
+        assert_eq!(sniff_image_mime(b"\x89PNG\r\n\x1a\n"), "image/png");
+        assert_eq!(sniff_image_mime(b"GIF89a"), "image/gif");
+        assert_eq!(sniff_image_mime(b"RIFF\0\0\0\0WEBPVP8 "), "image/webp");
+        assert_eq!(sniff_image_mime(b"\xff\xd8\xff"), "image/jpeg");
+        assert_eq!(sniff_image_mime(b""), "image/jpeg"); // unknown -> let the browser sniff
+    }
+
+    #[test]
+    fn art_cache_is_bounded_and_lru_by_insertion() {
+        for i in 0..ART_CACHE_MAX + 4 {
+            art_cache_put((format!("t{i}"), "a".into()), Some(format!("data:{i}")));
+        }
+        let len = ART_CACHE.lock().unwrap().len();
+        assert_eq!(len, ART_CACHE_MAX, "cache must not grow without bound");
+        // The oldest entries were evicted, the newest survive.
+        assert!(art_cache_get(&("t0".into(), "a".into())).is_none());
+        let newest = ART_CACHE_MAX + 3;
+        assert_eq!(
+            art_cache_get(&((format!("t{newest}")), "a".into())),
+            Some(Some(format!("data:{newest}")))
+        );
+        // Re-inserting a key moves it, it does not duplicate.
+        art_cache_put((format!("t{newest}"), "a".into()), None);
+        assert_eq!(ART_CACHE.lock().unwrap().len(), ART_CACHE_MAX);
+        assert_eq!(art_cache_get(&(format!("t{newest}"), "a".into())), Some(None));
+    }
+
+    #[test]
+    fn already_inlined_art_is_passed_through_without_fetching() {
+        let uri = "data:image/png;base64,AAAA";
+        assert_eq!(art_for(uri, "t", "a").as_deref(), Some(uri));
+        assert_eq!(art_for("", "t", "a"), None);
+    }
+
+    #[test]
+    fn percent_decodes_file_urls() {
+        assert_eq!(percent_decode("/tmp/a%20b.png"), "/tmp/a b.png");
+        assert_eq!(percent_decode("/tmp/plain.png"), "/tmp/plain.png");
+    }
 }
