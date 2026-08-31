@@ -1,4 +1,19 @@
 import { drawGauge } from "./gauge.js";
+import { progressAt } from "./lib/music.js";
+import {
+  GRID_COLS,
+  GRID_ROWS,
+  fits as fitsIn,
+  findFreeSpot as findFreeSpotIn,
+  normalizeLayout as normalizeLayoutIn,
+  rectOf as rectOfIn,
+} from "./lib/layout.js";
+
+// Platform gates. macOS is the only place the ⌥ interactivity gate exists;
+// Linux needs the opaque-background workaround (see base.css and CLAUDE.md)
+// and the Mutter auto-maximize dance in the window helpers below.
+const IS_MAC = navigator.platform.includes("Mac");
+const IS_LINUX = navigator.platform.includes("Linux");
 
 function updateClock() {
   const now = new Date();
@@ -1544,9 +1559,6 @@ function initPinToggle() {
 // Edit mode (pencil in the header) allows drag-to-move, size cycling,
 // and hiding widgets into a tray. Layout persists in localStorage.
 
-const GRID_COLS = 12;
-const GRID_ROWS = 6;
-
 // home = [col, row, size] — the default board mirrors the original design.
 const WIDGETS = {
   hardware:   { sizes: { s: [4, 1], m: [4, 2], l: [6, 2] }, home: [1, 1, "m"] },
@@ -1592,68 +1604,19 @@ function saveLayout() {
   } catch {}
 }
 
-// Saved rects go stale when a widget's size presets change between
-// versions: clamp each one back into the grid, relocate on collision,
-// fall back to a smaller size, and hide (tray-recoverable) as a last
-// resort — so applyLayout never renders an overlapping board.
+// The placement rules live in lib/layout.js so they can be unit-tested; these
+// bind them to this module's board state.
 function normalizeLayout() {
-  let changed = false;
-  for (const id of Object.keys(WIDGETS)) {
-    const p = layout[id];
-    if (p.hidden) continue;
-    let placed = false;
-    for (const size of [...new Set([p.size, "m", "s"])]) {
-      const dims = WIDGETS[id].sizes[size];
-      if (!dims) continue;
-      const [w, h] = dims;
-      const c = Math.min(Math.max(p.c, 1), GRID_COLS - w + 1);
-      const r = Math.min(Math.max(p.r, 1), GRID_ROWS - h + 1);
-      const spot = fits({ c, r, w, h }, id) ? [c, r] : findFreeSpot(w, h, id);
-      if (spot) {
-        changed ||= spot[0] !== p.c || spot[1] !== p.r || size !== p.size;
-        Object.assign(p, { size, c: spot[0], r: spot[1] });
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
-      p.hidden = true;
-      changed = true;
-    }
-  }
-  if (changed) saveLayout();
+  if (normalizeLayoutIn(layout, WIDGETS)) saveLayout();
 }
 
 function widgetEl(id) {
   return document.getElementById(`widget-${id}`);
 }
 
-function rectOf(id) {
-  const p = layout[id];
-  const [w, h] = WIDGETS[id].sizes[p.size];
-  return { c: p.c, r: p.r, w, h };
-}
-
-function overlaps(a, b) {
-  return a.c < b.c + b.w && b.c < a.c + a.w && a.r < b.r + b.h && b.r < a.r + a.h;
-}
-
-function fits(rect, ignoreId) {
-  if (rect.c < 1 || rect.r < 1) return false;
-  if (rect.c + rect.w > GRID_COLS + 1 || rect.r + rect.h > GRID_ROWS + 1) return false;
-  return Object.keys(WIDGETS).every(
-    (id) => id === ignoreId || layout[id].hidden || !overlaps(rect, rectOf(id)),
-  );
-}
-
-function findFreeSpot(w, h, ignoreId) {
-  for (let r = 1; r <= GRID_ROWS - h + 1; r++) {
-    for (let c = 1; c <= GRID_COLS - w + 1; c++) {
-      if (fits({ c, r, w, h }, ignoreId)) return [c, r];
-    }
-  }
-  return null;
-}
+const rectOf = (id) => rectOfIn(id, layout, WIDGETS);
+const fits = (rect, ignoreId) => fitsIn(rect, ignoreId, layout, WIDGETS);
+const findFreeSpot = (w, h, ignoreId) => findFreeSpotIn(w, h, ignoreId, layout, WIDGETS);
 
 function applyLayout() {
   const chips = document.getElementById("tray-chips");
@@ -1838,6 +1801,7 @@ function initLayout() {
     const editing = document.body.classList.toggle("editing");
     editBtn.classList.toggle("active", editing);
     tray.hidden = !editing;
+    if (editing) refreshFilled(); // the window grips only show in edit mode
   });
 
   document.getElementById("tray-reset").addEventListener("click", () => {
