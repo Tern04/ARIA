@@ -60,6 +60,10 @@ windows = { version = "0.62", features = [
 wayland-client = "0.31"
 wayland-backend = "0.3"
 wayland-scanner = "0.31"
+# X11 sessions (GNOME/Xorg and any other X11 WM): the focused window comes from
+# _NET_ACTIVE_WINDOW and idle time from MIT-SCREEN-SAVER. Pure Rust, so no
+# libX11/libxcb link dependency (see collectors::screentime::x11).
+x11rb = { version = "0.13", features = ["screensaver"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

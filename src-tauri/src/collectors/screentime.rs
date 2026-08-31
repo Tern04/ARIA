@@ -16,12 +16,45 @@ struct ScreenTime {
     apps: Vec<AppTime>,
     /// Total from the previous day's saved file, for the trend line.
     yesterday_total: Option<u64>,
+    /// Which backend is feeding the tracker — the widget uses it to explain
+    /// itself when a per-app breakdown isn't obtainable on this session.
+    /// "macos" | "windows" | "x11" | "cosmic" | "wlr" | "idle-only" | "unsupported"
+    source: &'static str,
 }
 
 #[derive(Serialize, Clone)]
 struct AppTime {
     name: String,
     secs: u64,
+}
+
+/// One day's tally. `total` is counted independently of `apps` so a session
+/// where the focused window can't be resolved (GNOME on Wayland exposes no
+/// such API) still reports honest screen time, just with no breakdown.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Default)]
+struct DayUsage {
+    total: u64,
+    apps: HashMap<String, u64>,
+}
+
+/// Day files written before `total` was split out are a bare app→secs map.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum StoredDay {
+    Modern(DayUsage),
+    Legacy(HashMap<String, u64>),
+}
+
+impl From<StoredDay> for DayUsage {
+    fn from(v: StoredDay) -> Self {
+        match v {
+            StoredDay::Modern(d) => d,
+            StoredDay::Legacy(apps) => DayUsage {
+                total: apps.values().sum(),
+                apps,
+            },
+        }
+    }
 }
 
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
@@ -39,13 +72,14 @@ pub fn spawn(app: AppHandle) {
             if now != day {
                 save_day(&app, &day, &usage);
                 day = now;
-                usage = HashMap::new();
+                usage = DayUsage::default();
                 yesterday_total = load_total(&app, &yesterday());
             }
 
             if idle_seconds() < IDLE_LIMIT {
+                usage.total += TICK.as_secs();
                 if let Some(name) = frontmost_app(&app) {
-                    *usage.entry(name).or_insert(0) += TICK.as_secs();
+                    *usage.apps.entry(name).or_insert(0) += TICK.as_secs();
                 }
             }
 
@@ -65,9 +99,9 @@ pub fn spawn(app: AppHandle) {
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn spawn(_app: AppHandle) {}
 
-fn summarize(usage: &HashMap<String, u64>, yesterday_total: Option<u64>) -> ScreenTime {
-    let total = usage.values().sum();
+fn summarize(usage: &DayUsage, yesterday_total: Option<u64>) -> ScreenTime {
     let mut apps: Vec<AppTime> = usage
+        .apps
         .iter()
         .map(|(name, secs)| AppTime {
             name: name.clone(),
@@ -77,9 +111,10 @@ fn summarize(usage: &HashMap<String, u64>, yesterday_total: Option<u64>) -> Scre
     apps.sort_by(|a, b| b.secs.cmp(&a.secs));
     apps.truncate(TOP_APPS);
     ScreenTime {
-        total,
+        total: usage.total,
         apps,
         yesterday_total,
+        source: source(),
     }
 }
 
@@ -96,7 +131,7 @@ fn yesterday() -> String {
 /// Sum of a saved day file, if one exists (the tracker has been writing
 /// them since day one; this is the first reader).
 fn load_total(app: &AppHandle, day: &str) -> Option<u64> {
-    Some(load_day(app, day)?.values().sum())
+    Some(load_day(app, day)?.total)
 }
 
 fn day_file(app: &AppHandle, day: &str) -> Option<PathBuf> {
@@ -105,12 +140,12 @@ fn day_file(app: &AppHandle, day: &str) -> Option<PathBuf> {
     Some(dir.join(format!("{day}.json")))
 }
 
-fn load_day(app: &AppHandle, day: &str) -> Option<HashMap<String, u64>> {
+fn load_day(app: &AppHandle, day: &str) -> Option<DayUsage> {
     let raw = std::fs::read_to_string(day_file(app, day)?).ok()?;
-    serde_json::from_str(&raw).ok()
+    serde_json::from_str::<StoredDay>(&raw).ok().map(Into::into)
 }
 
-fn save_day(app: &AppHandle, day: &str, usage: &HashMap<String, u64>) {
+fn save_day(app: &AppHandle, day: &str, usage: &DayUsage) {
     let Some(path) = day_file(app, day) else {
         return;
     };
@@ -157,6 +192,11 @@ fn frontmost_app(app: &AppHandle) -> Option<String> {
     })
     .ok()?;
     rx.recv_timeout(Duration::from_secs(2)).ok().flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn source() -> &'static str {
+    "macos"
 }
 
 #[cfg(target_os = "macos")]
@@ -209,6 +249,11 @@ fn frontmost_app(_app: &AppHandle) -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
+fn source() -> &'static str {
+    "windows"
+}
+
+#[cfg(target_os = "windows")]
 fn idle_seconds() -> f64 {
     use windows::Win32::System::SystemInformation::GetTickCount;
     use windows::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
@@ -224,26 +269,248 @@ fn idle_seconds() -> f64 {
     now.wrapping_sub(info.dwTime) as f64 / 1000.0
 }
 
-/// Linux/COSMIC: the focused window's app comes from a tiny background Wayland
-/// client (see `wl`), since Wayland exposes neither the focused window nor idle
-/// time over any CLI or D-Bus here.
+/// Which session facilities are available. Resolved once from the environment:
+/// a Wayland session exposes the focused window only through a compositor
+/// protocol, an X11 session through `_NET_ACTIVE_WINDOW`, and neither is
+/// reachable from the other. Guessing wrong used to mean the Wayland client
+/// failed to connect and logged "Could not find wayland compositor" every five
+/// seconds for the lifetime of the app on every X11 session.
 #[cfg(target_os = "linux")]
-fn frontmost_app(_app: &AppHandle) -> Option<String> {
-    wl::ensure_started();
-    wl::active_app()
+#[derive(Clone, Copy, PartialEq)]
+enum Backend {
+    X11,
+    Wayland,
+    Unsupported,
 }
 
-/// ext-idle-notify reports idle as a threshold crossing (idled/resumed at
-/// `IDLE_LIMIT`), not a running counter, so map that boolean back onto the
-/// numeric contract the shared loop expects: past the limit when idle, zero
-/// otherwise. Until the Wayland client connects this reports "active", so
-/// early ticks count rather than drop.
+#[cfg(target_os = "linux")]
+fn backend() -> Backend {
+    static B: std::sync::OnceLock<Backend> = std::sync::OnceLock::new();
+    *B.get_or_init(|| {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            Backend::Wayland
+        } else if std::env::var_os("DISPLAY").is_some() {
+            Backend::X11
+        } else {
+            Backend::Unsupported
+        }
+    })
+}
+
+/// Log a diagnostic at most once per distinct message. The Linux backends run
+/// in retry loops, and a permanent condition (missing protocol, no X11 auth)
+/// would otherwise scroll the console forever.
+#[cfg(target_os = "linux")]
+fn warn_once(msg: &str) {
+    static SEEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    if let Ok(mut seen) = SEEN.lock() {
+        if seen.iter().any(|m| m == msg) {
+            return;
+        }
+        seen.push(msg.to_string());
+    }
+    eprintln!("{msg}");
+}
+
+#[cfg(target_os = "linux")]
+fn frontmost_app(_app: &AppHandle) -> Option<String> {
+    match backend() {
+        Backend::X11 => x11::active_app(),
+        Backend::Wayland => {
+            wl::ensure_started();
+            wl::active_app()
+        }
+        Backend::Unsupported => None,
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn idle_seconds() -> f64 {
-    if wl::is_idle() {
-        IDLE_LIMIT + 1.0
-    } else {
-        0.0
+    match backend() {
+        // MIT-SCREEN-SAVER gives a real running counter.
+        Backend::X11 => x11::idle_seconds(),
+        // ext-idle-notify reports idle as a threshold crossing (idled/resumed
+        // at `IDLE_LIMIT`), not a counter, so map that boolean back onto the
+        // numeric contract the shared loop expects. Until the client connects
+        // this reports "active", so early ticks count rather than drop.
+        Backend::Wayland => {
+            wl::ensure_started();
+            if wl::is_idle() {
+                IDLE_LIMIT + 1.0
+            } else {
+                0.0
+            }
+        }
+        Backend::Unsupported => 0.0,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn source() -> &'static str {
+    match backend() {
+        Backend::X11 => "x11",
+        Backend::Wayland => {
+            wl::ensure_started();
+            wl::source()
+        }
+        Backend::Unsupported => "unsupported",
+    }
+}
+
+/// A reverse-DNS app id or WM_CLASS → a short display label:
+/// "com.system76.CosmicTerm" → "CosmicTerm", "firefox" → "Firefox".
+#[cfg(target_os = "linux")]
+fn friendly(app_id: &str) -> String {
+    let base = app_id.strip_suffix(".desktop").unwrap_or(app_id);
+    let seg = base.rsplit('.').next().unwrap_or(base);
+    let seg = if seg.is_empty() { base } else { seg };
+    let mut chars = seg.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => app_id.to_string(),
+    }
+}
+
+/// X11 backend: the focused window from `_NET_ACTIVE_WINDOW` (EWMH, honoured by
+/// Mutter, KWin, i3, …) and idle time from the MIT-SCREEN-SAVER extension — the
+/// same source `xprintidle` uses. Pure Rust over the X11 socket via x11rb, so
+/// there is no libX11/libxcb link dependency.
+///
+/// Fails soft the same way the Wayland client does: any error reports "no
+/// active app" / "not idle" and drops the connection so the next tick (5 s)
+/// reconnects.
+#[cfg(target_os = "linux")]
+mod x11 {
+    use std::error::Error;
+    use std::sync::Mutex;
+    use x11rb::connection::{Connection as _, RequestConnection as _};
+    use x11rb::protocol::screensaver::ConnectionExt as _;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _, Window};
+    use x11rb::rust_connection::RustConnection;
+
+    type Res<T> = Result<T, Box<dyn Error>>;
+
+    struct Conn {
+        conn: RustConnection,
+        root: Window,
+        net_active_window: u32,
+        net_wm_name: u32,
+        utf8_string: u32,
+        has_screensaver: bool,
+    }
+
+    impl Conn {
+        fn open() -> Res<Conn> {
+            let (conn, screen) = x11rb::connect(None)?;
+            let root = conn.setup().roots[screen].root;
+            let intern = |name: &str| -> Res<u32> {
+                Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)
+            };
+            let net_active_window = intern("_NET_ACTIVE_WINDOW")?;
+            let net_wm_name = intern("_NET_WM_NAME")?;
+            let utf8_string = intern("UTF8_STRING")?;
+            let has_screensaver = conn
+                .extension_information(x11rb::protocol::screensaver::X11_EXTENSION_NAME)?
+                .is_some();
+            if !has_screensaver {
+                super::warn_once(
+                    "screentime x11: MIT-SCREEN-SAVER unavailable — idle time will not be detected",
+                );
+            }
+            Ok(Conn {
+                conn,
+                root,
+                net_active_window,
+                net_wm_name,
+                utf8_string,
+                has_screensaver,
+            })
+        }
+    }
+
+    /// Run `f` against a live connection, opening one on demand. A failure is
+    /// reported once and the connection dropped, so the next call reconnects.
+    fn with_conn<T>(f: impl FnOnce(&Conn) -> Res<T>) -> Option<T> {
+        static CONN: Mutex<Option<Conn>> = Mutex::new(None);
+        let mut guard = CONN.lock().ok()?;
+        if guard.is_none() {
+            match Conn::open() {
+                Ok(c) => *guard = Some(c),
+                Err(e) => {
+                    super::warn_once(&format!("screentime x11: {e}"));
+                    return None;
+                }
+            }
+        }
+        match f(guard.as_ref()?) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                super::warn_once(&format!("screentime x11: {e}"));
+                *guard = None;
+                None
+            }
+        }
+    }
+
+    /// WM_CLASS is "instance\0class\0"; the class half is the stable, tidier
+    /// one ("Navigator"/"firefox" → prefer "firefox"'s class "Firefox").
+    pub(super) fn class_name(raw: &[u8]) -> Option<String> {
+        let mut parts = raw.split(|b| *b == 0).filter(|p| !p.is_empty());
+        let instance = parts.next();
+        let class = parts.next().or(instance)?;
+        let name = super::friendly(String::from_utf8_lossy(class).trim());
+        (!name.is_empty()).then_some(name)
+    }
+
+    pub fn active_app() -> Option<String> {
+        with_conn(|c| {
+            let focused = c
+                .conn
+                .get_property(false, c.root, c.net_active_window, AtomEnum::WINDOW, 0, 1)?
+                .reply()?;
+            let Some(win) = focused.value32().and_then(|mut v| v.next()) else {
+                return Ok(None); // no EWMH property — nothing focused
+            };
+            if win == 0 {
+                return Ok(None);
+            }
+            // Per-window reads race with the window closing; a protocol error
+            // there means "unknown", not "the connection is broken".
+            let class = c
+                .conn
+                .get_property(false, win, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)?
+                .reply();
+            if let Ok(class) = class {
+                if let Some(name) = class_name(&class.value) {
+                    return Ok(Some(name));
+                }
+            }
+            let title = c
+                .conn
+                .get_property(false, win, c.net_wm_name, c.utf8_string, 0, 256)?
+                .reply();
+            Ok(title.ok().and_then(|t| {
+                let s = String::from_utf8_lossy(&t.value).trim().to_string();
+                (!s.is_empty()).then(|| super::friendly(&s))
+            }))
+        })
+        .flatten()
+    }
+
+    /// Seconds since the last keyboard/pointer input. 0 (i.e. "active") when
+    /// the extension is missing, so ticks are counted rather than dropped.
+    pub fn idle_seconds() -> f64 {
+        with_conn(|c| {
+            if !c.has_screensaver {
+                return Ok(0.0);
+            }
+            Ok(c.conn
+                .screensaver_query_info(c.root)?
+                .reply()
+                .map(|i| i.ms_since_user_input as f64 / 1000.0)
+                .unwrap_or(0.0))
+        })
+        .unwrap_or(0.0)
     }
 }
 
@@ -261,7 +528,7 @@ fn idle_seconds() -> f64 {
 mod wl {
     use super::IDLE_LIMIT;
     use std::collections::HashMap;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::{Mutex, Once};
     use std::time::Duration;
     use wayland_client::backend::ObjectId;
@@ -278,6 +545,21 @@ mod wl {
         use self::__interfaces::*;
         wayland_scanner::generate_client_code!("protocols/cosmic-toplevel-info-v1.xml");
     }
+    pub mod wlr {
+        use wayland_client;
+        use wayland_client::protocol::*;
+        pub mod __interfaces {
+            use wayland_client::protocol::__interfaces::*;
+            wayland_scanner::generate_interfaces!(
+                "protocols/wlr-foreign-toplevel-management-unstable-v1.xml"
+            );
+        }
+        use self::__interfaces::*;
+        wayland_scanner::generate_client_code!(
+            "protocols/wlr-foreign-toplevel-management-unstable-v1.xml"
+        );
+    }
+
     pub mod idle {
         use wayland_client;
         use wayland_client::protocol::*;
@@ -294,10 +576,28 @@ mod wl {
     use cosmic::zcosmic_workspace_handle_v1::ZcosmicWorkspaceHandleV1;
     use idle::ext_idle_notification_v1::{Event as NEvent, ExtIdleNotificationV1};
     use idle::ext_idle_notifier_v1::ExtIdleNotifierV1;
+    use wlr::zwlr_foreign_toplevel_handle_v1::{Event as WEvent, ZwlrForeignToplevelHandleV1};
+    use wlr::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 
     static ACTIVE: Mutex<Option<String>> = Mutex::new(None);
     static IDLE: AtomicBool = AtomicBool::new(false);
     static START: Once = Once::new();
+
+    /// Which toplevel protocol the compositor turned out to offer. GNOME/Mutter
+    /// offers neither, but does implement ext-idle-notify — so screen time is
+    /// still countable there, just without a per-app breakdown.
+    const SRC_IDLE_ONLY: u8 = 0;
+    const SRC_COSMIC: u8 = 1;
+    const SRC_WLR: u8 = 2;
+    static SOURCE: AtomicU8 = AtomicU8::new(SRC_IDLE_ONLY);
+
+    pub fn source() -> &'static str {
+        match SOURCE.load(Ordering::Relaxed) {
+            SRC_COSMIC => "cosmic",
+            SRC_WLR => "wlr",
+            _ => "idle-only",
+        }
+    }
 
     /// Friendly name of the focused app, or None when unknown/nothing focused.
     pub fn active_app() -> Option<String> {
@@ -309,7 +609,9 @@ mod wl {
         IDLE.load(Ordering::Relaxed)
     }
 
-    /// Start the Wayland client once, on the first tracker tick.
+    /// Start the Wayland client once, on the first tracker tick. Only ever
+    /// reached when `WAYLAND_DISPLAY` is set (see `Backend`), so it can no
+    /// longer spin on "Could not find wayland compositor" in an X11 session.
     pub fn ensure_started() {
         START.call_once(|| {
             let _ = std::thread::Builder::new()
@@ -320,15 +622,23 @@ mod wl {
 
     fn run() {
         // Reconnect on any protocol error or disconnect so a transient failure
-        // (or a compositor restart) can't permanently stop tracking.
+        // (or a compositor restart) can't permanently stop tracking. A
+        // *permanent* failure must not scroll the console, so the message is
+        // logged once per distinct text and the retry backs off.
+        let mut delay = Duration::from_secs(5);
+        const MAX_DELAY: Duration = Duration::from_secs(120);
         loop {
-            if let Err(e) = run_once() {
-                eprintln!("screentime wayland: {e}");
-                if let Ok(mut g) = ACTIVE.lock() {
-                    *g = None; // don't keep crediting a stale app after a drop
+            match run_once() {
+                Ok(()) => delay = Duration::from_secs(5),
+                Err(e) => {
+                    super::warn_once(&format!("screentime wayland: {e}"));
+                    if let Ok(mut g) = ACTIVE.lock() {
+                        *g = None; // don't keep crediting a stale app after a drop
+                    }
+                    delay = (delay * 2).min(MAX_DELAY);
                 }
             }
-            std::thread::sleep(Duration::from_secs(5));
+            std::thread::sleep(delay);
         }
     }
 
@@ -363,30 +673,39 @@ mod wl {
         notifier: Option<ExtIdleNotifierV1>,
     }
 
+    /// The `state` arg is a packed array of u32 enum values; `activated` (2)
+    /// marks the focused window. Both protocols use the same numbering.
+    fn is_activated(bytes: &[u8]) -> bool {
+        bytes
+            .chunks_exact(4)
+            .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == 2)
+    }
+
     impl Watcher {
+        /// Record focus gained/lost for one toplevel. Losing it must clear the
+        /// active id: only ever *setting* it meant a window that was closed or
+        /// unfocused without another taking over kept earning screen time.
+        fn set_activated(&mut self, id: ObjectId, activated: bool) {
+            if activated {
+                self.active = Some(id);
+            } else if self.active.as_ref() == Some(&id) {
+                self.active = None;
+            } else {
+                return; // nothing changed for the focused window
+            }
+            self.publish();
+        }
+
         /// Mirror the currently-activated toplevel's app id into shared state.
         fn publish(&self) {
             let name = self
                 .active
                 .as_ref()
                 .and_then(|id| self.app_ids.get(id))
-                .map(|id| friendly(id));
+                .map(|id| super::friendly(id));
             if let Ok(mut g) = ACTIVE.lock() {
                 *g = name;
             }
-        }
-    }
-
-    /// A reverse-DNS app id → a short display label:
-    /// "com.system76.CosmicTerm" → "CosmicTerm", "firefox" → "Firefox".
-    fn friendly(app_id: &str) -> String {
-        let base = app_id.strip_suffix(".desktop").unwrap_or(app_id);
-        let seg = base.rsplit('.').next().unwrap_or(base);
-        let seg = if seg.is_empty() { base } else { seg };
-        let mut chars = seg.chars();
-        match chars.next() {
-            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-            None => app_id.to_string(),
         }
     }
 
@@ -408,6 +727,19 @@ mod wl {
                 match interface.as_str() {
                     "zcosmic_toplevel_info_v1" => {
                         reg.bind::<ZcosmicToplevelInfoV1, _, _>(name, 1, qh, ());
+                        SOURCE.store(SRC_COSMIC, Ordering::Relaxed);
+                    }
+                    // wlroots-family compositors (KDE Plasma, sway, Hyprland,
+                    // wayfire). COSMIC wins if both are advertised — it is the
+                    // native one there.
+                    "zwlr_foreign_toplevel_manager_v1" => {
+                        reg.bind::<ZwlrForeignToplevelManagerV1, _, _>(name, 1, qh, ());
+                        let _ = SOURCE.compare_exchange(
+                            SRC_IDLE_ONLY,
+                            SRC_WLR,
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        );
                     }
                     // Outputs must be bound so the toplevel handle's
                     // output_enter/leave events resolve their wl_output arg.
@@ -460,17 +792,55 @@ mod wl {
                     state.publish();
                 }
                 HEvent::State { state: bytes } => {
-                    // The state arg is a packed array of u32 enum values;
-                    // `activated` (2) marks the focused window.
-                    let activated = bytes
-                        .chunks_exact(4)
-                        .any(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]]) == 2);
-                    if activated {
-                        state.active = Some(id);
-                        state.publish();
-                    }
+                    state.set_activated(id, is_activated(&bytes));
                 }
                 HEvent::Closed => {
+                    state.app_ids.remove(&id);
+                    if state.active.as_ref() == Some(&id) {
+                        state.active = None;
+                    }
+                    state.publish();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Watcher {
+        fn event(
+            _: &mut Self,
+            _: &ZwlrForeignToplevelManagerV1,
+            _: wlr::zwlr_foreign_toplevel_manager_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+        }
+        // The `toplevel` event (opcode 0) creates a child handle.
+        wayland_client::event_created_child!(Watcher, ZwlrForeignToplevelManagerV1, [
+            0 => (ZwlrForeignToplevelHandleV1, ()),
+        ]);
+    }
+
+    impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Watcher {
+        fn event(
+            state: &mut Self,
+            handle: &ZwlrForeignToplevelHandleV1,
+            event: WEvent,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let id = handle.id();
+            match event {
+                WEvent::AppId { app_id } => {
+                    state.app_ids.insert(id, app_id);
+                    state.publish();
+                }
+                WEvent::State { state: bytes } => {
+                    state.set_activated(id, is_activated(&bytes));
+                }
+                WEvent::Closed => {
                     state.app_ids.remove(&id);
                     if state.active.as_ref() == Some(&id) {
                         state.active = None;
@@ -543,5 +913,115 @@ mod wl {
             _: &QueueHandle<Self>,
         ) {
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn friendly_shortens_reverse_dns_ids() {
+        assert_eq!(friendly("com.system76.CosmicTerm"), "CosmicTerm");
+        assert_eq!(friendly("firefox"), "Firefox");
+        assert_eq!(friendly("org.gnome.Nautilus.desktop"), "Nautilus");
+        assert_eq!(friendly("Code"), "Code");
+        // Degenerate input must not panic.
+        assert_eq!(friendly(""), "");
+    }
+
+    #[test]
+    fn day_file_reads_the_legacy_bare_map() {
+        // Files written before `total` was split out are app -> secs.
+        let legacy: DayUsage = serde_json::from_str::<StoredDay>(r#"{"Firefox":30,"Code":15}"#)
+            .expect("legacy shape must still parse")
+            .into();
+        assert_eq!(legacy.total, 45, "total is derived from the app tallies");
+        assert_eq!(legacy.apps.get("Firefox"), Some(&30));
+
+        // The X11 sessions this release fixes left behind a pile of empty
+        // files; they must load as a clean zero, not an error.
+        let empty: DayUsage = serde_json::from_str::<StoredDay>("{}").unwrap().into();
+        assert_eq!(empty.total, 0);
+        assert!(empty.apps.is_empty());
+    }
+
+    #[test]
+    fn day_file_round_trips_the_current_shape() {
+        let mut before = DayUsage {
+            total: 900, // counted even where no app could be resolved
+            ..DayUsage::default()
+        };
+        before.apps.insert("Firefox".into(), 300);
+        let json = serde_json::to_string(&before).unwrap();
+        let after: DayUsage = serde_json::from_str::<StoredDay>(&json).unwrap().into();
+        assert_eq!(after.total, 900);
+        assert_eq!(after.apps, before.apps);
+        // Crucially, total is NOT re-derived: idle-only sessions have no apps.
+        let idle_only: DayUsage = serde_json::from_str::<StoredDay>(r#"{"total":60,"apps":{}}"#)
+            .unwrap()
+            .into();
+        assert_eq!(idle_only.total, 60);
+        assert!(idle_only.apps.is_empty());
+    }
+
+    #[test]
+    fn summarize_ranks_and_truncates() {
+        let mut usage = DayUsage {
+            total: 100,
+            ..DayUsage::default()
+        };
+        for i in 0..TOP_APPS + 3 {
+            usage.apps.insert(format!("app{i}"), i as u64);
+        }
+        let s = summarize(&usage, Some(42));
+        assert_eq!(s.total, 100);
+        assert_eq!(s.yesterday_total, Some(42));
+        assert_eq!(s.apps.len(), TOP_APPS);
+        assert!(
+            s.apps.windows(2).all(|w| w[0].secs >= w[1].secs),
+            "apps are ranked by time desc"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn wm_class_prefers_the_class_over_the_instance() {
+        // WM_CLASS is "instance\0class\0".
+        assert_eq!(
+            x11::class_name(b"navigator\0Firefox\0").as_deref(),
+            Some("Firefox")
+        );
+        // Only one string present — use it.
+        assert_eq!(
+            x11::class_name(b"cosmic-term\0").as_deref(),
+            Some("Cosmic-term")
+        );
+        assert_eq!(x11::class_name(b"").as_deref(), None);
+        assert_eq!(x11::class_name(b"\0\0").as_deref(), None);
+    }
+
+    /// Live check against the running X server. Skipped on Wayland-only or
+    /// headless machines so the suite stays runnable anywhere.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn x11_backend_reads_the_real_session() {
+        if std::env::var_os("DISPLAY").is_none() || std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            eprintln!("skipping: not an X11 session");
+            return;
+        }
+        let app = x11::active_app();
+        eprintln!("x11 active_app = {app:?}");
+        assert!(
+            app.is_some(),
+            "an X11 session with a focused window must resolve an app name"
+        );
+        let idle = x11::idle_seconds();
+        eprintln!("x11 idle_seconds = {idle}");
+        assert!(
+            idle >= 0.0 && idle.is_finite(),
+            "idle seconds must be sane, got {idle}"
+        );
     }
 }

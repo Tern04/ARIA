@@ -1001,11 +1001,23 @@ function setStatus(id, online) {
 }
 
 let screentimeData = null;
+
+// Backends that can report *how long* the session was active but not *which*
+// window had focus. GNOME on Wayland is the big one — Mutter implements
+// ext-idle-notify but exposes no toplevel/focus protocol at all.
+const ST_NO_APP_BREAKDOWN = {
+  "idle-only": "no per-app breakdown on this compositor",
+  unsupported: "no window or idle source on this session",
+};
+
 function renderScreentime() {
   if (!screentimeData) return;
   const p = screentimeData;
   const size = document.getElementById("widget-screentime").dataset.size;
   const body = document.querySelector("#widget-screentime .widget-body");
+  // On a backend that can't name the focused window, say so — otherwise a
+  // permanent bare "0m" is indistinguishable from a broken tracker.
+  const note = ST_NO_APP_BREAKDOWN[p.source];
   body.replaceChildren();
   const total = document.createElement("div");
   total.className = "st-total";
@@ -1019,6 +1031,13 @@ function renderScreentime() {
     delta.textContent =
       `yesterday ${fmtDuration(p.yesterday_total)} (${d >= 0 ? "+" : "−"}${fmtDuration(Math.abs(d))})`;
     body.append(delta);
+  }
+  if (note) {
+    const why = document.createElement("div");
+    why.className = "st-note";
+    why.textContent = note;
+    body.append(why);
+    return; // there is no app list to draw
   }
   const list = document.createElement("div");
   list.className = "st-list fill-list";
@@ -1051,25 +1070,23 @@ function renderScreentime() {
 let musicData = null;
 let musicSampledAt = 0; // wall clock of the last sample, for local advance
 
-function fmtClock(secs) {
-  const m = Math.floor(secs / 60);
-  const s = Math.floor(secs % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
 // Advance the progress bar between polls using the wall clock; called by
-// renderMusic and a 1 s ticker so the bar moves without new samples.
+// renderMusic and a 1 s ticker so the bar moves without new samples. The
+// drift cap and the "player has no position" case live in lib/music.js.
 function updateMusicProgress() {
   const p = musicData;
   const wrap = document.getElementById("music-progress");
-  if (!p || wrap.hidden) return;
-  const dur = p.duration_secs;
-  const elapsed = p.status === "playing" ? (Date.now() - musicSampledAt) / 1000 : 0;
-  const pos = Math.min(p.position_secs + elapsed, dur);
-  document.getElementById("music-progress-fill").style.width =
-    dur > 0 ? `${(pos / dur) * 100}%` : "0%";
-  document.getElementById("music-progress-time").textContent =
-    dur > 0 ? `${fmtClock(pos)} / ${fmtClock(dur)}` : "";
+  const active = !!p && (p.status === "playing" || p.status === "paused");
+  const r = active
+    ? progressAt(p, musicSampledAt, Date.now())
+    : { visible: false };
+  wrap.hidden = !r.visible;
+  if (!r.visible) return;
+  // No total to measure against (browser media sessions publish no track
+  // length) — show the running time on its own rather than an empty bar.
+  wrap.classList.toggle("music-progress--no-total", !r.hasBar);
+  document.getElementById("music-progress-fill").style.width = `${r.pct}%`;
+  document.getElementById("music-progress-time").textContent = r.label;
 }
 
 function renderMusic() {
