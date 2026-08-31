@@ -15,13 +15,20 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 # macos-private-api: required for transparent windows on macOS
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["protocol-asset", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-autostart = "2"
+# Native file picker for the custom wallpaper (see src/wallpaper.rs).
+tauri-plugin-dialog = "2"
+# Loopback-only media server for video wallpapers. WebKitGTK's media player
+# cannot load wry's custom `asset:` scheme and mis-plays blob: URLs (readyState
+# 4, currentTime frozen at 0); it works over HTTP with byte ranges, which is
+# also the only way to play a large file without buffering it in memory.
+tiny_http = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.36"
-tokio = { version = "1", features = ["time", "sync", "macros", "net"] }
+tokio = { version = "1", features = ["time", "sync", "macros", "net", "rt"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Discord gateway websocket; rustls to share the TLS stack with reqwest.
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }

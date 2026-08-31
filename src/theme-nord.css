@@ -818,17 +818,11 @@ body.interactive .mod-hint {
   font-size: 1rem;
   font-weight: 600;
   color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .track-artist {
   font-size: 0.82rem;
   color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .music-controls {

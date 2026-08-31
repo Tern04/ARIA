@@ -2059,19 +2059,27 @@ function initDisplayMenu() {
     const m = (await W.currentMonitor()) || (await W.primaryMonitor());
     if (!m) return;
     const s = loadWinState() || {};
-    if (s.fill) {
-      const scale = m.scaleFactor || 1;
-      const pre = s.preFill || {
-        w: Math.round(1280 * scale),
-        h: Math.round(800 * scale),
-      };
+    const scale = m.scaleFactor || 1;
+    const fallback = { w: Math.round(1280 * scale), h: Math.round(800 * scale) };
+    // Trust the real window state, not the saved flag alone: Mutter can
+    // maximize us behind our back, and a stale flag used to capture the
+    // fullscreen size as preFill — which left the window stuck filled forever.
+    if (await isFilled()) {
+      const pre = s.preFill || fallback;
       saveWinState({ fill: false });
       await placeCentered(m, pre.w, pre.h);
     } else {
       const size = await win.innerSize();
-      saveWinState({ fill: true, preFill: { w: size.width, h: size.height } });
+      const wa = workArea(m);
+      // Never remember a "restore" size that is itself the filled size.
+      const pre =
+        size.width >= wa.size.width && size.height >= wa.size.height
+          ? s.preFill || fallback
+          : { w: size.width, h: size.height };
+      saveWinState({ fill: true, preFill: pre });
       await fillMonitor(m);
     }
+    await refreshFilled();
   }
 
   async function rebuild() {
@@ -2087,7 +2095,7 @@ function initDisplayMenu() {
       b.addEventListener("click", () => moveTo(m));
       list.append(b);
     });
-    fillBtn.classList.toggle("active", !!(loadWinState() || {}).fill);
+    fillBtn.classList.toggle("active", await isFilled());
     autostart("is_enabled")
       .then((on) => autoBtn.classList.toggle("active", !!on))
       .catch(() => {});
@@ -2105,16 +2113,38 @@ function initDisplayMenu() {
   });
 }
 
+// Cached so the grip handlers can decide synchronously — see the mousedown
+// comment below; an await between the click and startDragging() loses the grab.
+let winFilled = false;
+
+async function refreshFilled() {
+  winFilled = await isFilled();
+  for (const id of ["win-move", "win-resize"]) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.classList.toggle("is-disabled", winFilled);
+    el.title = winFilled
+      ? "Turn off Fill screen to move or resize the window"
+      : id === "win-move"
+        ? "Move window"
+        : "Resize window";
+  }
+}
+
 function initWindowHandles() {
   const win = window.__TAURI__.window.getCurrentWindow();
-  document.getElementById("win-move").addEventListener("pointerdown", (e) => {
-    e.preventDefault();
+  // mousedown, not pointerdown, and no preventDefault(): GTK's
+  // begin_move_drag()/begin_resize_drag() need the live button grab, which
+  // preventDefault() plus the async IPC hop can lose on X11.
+  document.getElementById("win-move").addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || winFilled) return;
     win.startDragging();
   });
-  document.getElementById("win-resize").addEventListener("pointerdown", (e) => {
-    e.preventDefault();
+  document.getElementById("win-resize").addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || winFilled) return;
     win.startResizeDragging("SouthEast");
   });
+  refreshFilled();
 }
 
 // The OS owns move/resize drags (no completion callback), so geometry is
@@ -2152,72 +2182,317 @@ function initWindowStateSaver() {
   win.onResized(queue);
 }
 
-// Linux opaque-background alignment. The window is opaque (WebKitGTK+NVIDIA
-// renders transparency as flickering black — see CLAUDE.md), so we paint the
-// real desktop wallpaper behind the glass. To hide the seams where the desktop
-// shows around the window (the border gap, and the panel strip a filled window
-// can't cover), the wallpaper is sized to the whole monitor and shifted by the
-// window's offset within it, so it lines up pixel-for-pixel with the desktop
-// behind it. That needs the window's absolute position — which the compositor
-// only gives on X11. On Wayland (COSMIC) both outerPosition() and the monitor
-// position report {0,0}, and the work area reports no panel inset, so alignment
-// is impossible; we fall back to plainly cover-fitting the wallpaper to the
-// window (CSS defaults). The image refreshes live when the wallpaper changes.
-async function setupLinuxWallpaper() {
-  const { core, window: W, event } = window.__TAURI__;
-  const root = document.documentElement;
+// ── wallpaper ───────────────────────────────────────────────────────────────
+// The HUD's backdrop. On Linux it must exist at all: the window is opaque
+// there (WebKitGTK+NVIDIA renders transparency as flickering black — see
+// CLAUDE.md), so something has to be painted behind the glass. The default is
+// the real desktop wallpaper; the user can instead pick any image or video, or
+// turn it off.
+//
+// Seam alignment (desktop source only): the layer is sized to the whole monitor
+// and shifted by the window's offset within it, so the image lines up
+// pixel-for-pixel with the desktop showing around the window — the border gap
+// and the panel strip a filled window can't cover both disappear. That needs
+// the window's absolute position, which only X11 gives; on Wayland (COSMIC)
+// outerPosition() and the monitor position both report {0,0} and the work area
+// reports no panel inset, so we cover-fit the window instead. A picked file has
+// nothing to line up with, so it always cover-fits.
+
+let wallpaperCfg = null;
+
+async function setupWallpaper() {
+  const { core } = window.__TAURI__;
+  try {
+    wallpaperCfg = await core.invoke("wallpaper_config");
+  } catch (e) {
+    console.error("wallpaper_config failed:", e);
+    wallpaperCfg = { source: IS_LINUX ? "desktop" : "none", fit: "cover", dim: 0, blur: 0 };
+  }
+  try {
+    await applyWallpaper(wallpaperCfg);
+  } catch (e) {
+    showWallpaperError(e?.message || e);
+  }
+  watchWallpaperSources();
+}
+
+// Live sources: the desktop wallpaper rotates (COSMIC every ~5 min), and the
+// window moving/resizing changes the alignment offset.
+function watchWallpaperSources() {
+  const { window: W, event } = window.__TAURI__;
   const win = W.getCurrentWindow();
+  const realign = () => {
+    if (wallpaperCfg?.source === "desktop") alignWallpaper();
+  };
+  try {
+    win.onMoved(realign);
+    win.onResized(realign);
+    event.listen("desktop-background", (e) => {
+      if (wallpaperCfg?.source === "desktop") setWallpaperMedia(e.payload, "image");
+    });
+  } catch {}
+  // Stop decoding video while the window is minimised or fully occluded.
+  document.addEventListener("visibilitychange", () => {
+    const video = document.getElementById("wallpaper-video");
+    if (video.hidden) return;
+    if (document.hidden) video.pause();
+    else video.play().catch(() => {});
+  });
+}
+
+/** Report a wallpaper problem in the settings panel (and the console). */
+function showWallpaperError(message) {
+  console.error("wallpaper:", message);
+  const el = document.getElementById("wp-error");
+  if (!el) return;
+  el.textContent = String(message);
+  el.hidden = !message;
+}
+
+/**
+ * Point the underlay at an image or a video.
+ *
+ * Images come over Tauri's asset protocol. Video cannot: WebKitGTK plays media
+ * through GStreamer, which doesn't know wry's custom `asset:` scheme (an <img>
+ * loads, a <video> fails instantly with FormatError), and a blob: URL built
+ * from the same bytes is worse — the element reports readyState 4 and fires
+ * `playing` while currentTime stays pinned at 0. Video therefore comes from the
+ * loopback media server in wallpaper.rs, which is also what lets a large file
+ * stream instead of being buffered whole.
+ */
+async function setWallpaperMedia(src, kind) {
+  const img = document.getElementById("wallpaper-img");
+  const video = document.getElementById("wallpaper-video");
+
+  const clearVideo = () => {
+    video.hidden = true;
+    video.removeAttribute("src");
+    video.load(); // drop the decoder
+  };
+
+  if (!src) {
+    img.hidden = true;
+    img.removeAttribute("src");
+    clearVideo();
+    return;
+  }
+  if (kind === "video") {
+    img.hidden = true;
+    img.removeAttribute("src");
+    const url = await window.__TAURI__.core.invoke("wallpaper_media_url");
+    if (!url) throw new Error("could not serve the video file");
+    // A codec the system can't decode fails here, not at invoke time — on
+    // Linux H.264 needs gstreamer1.0-libav, which is not installed by default.
+    video.onerror = () => {
+      showWallpaperError(
+        video.error?.message ||
+          "this video could not be played — the system may be missing a decoder for it",
+      );
+    };
+    video.src = url;
+    video.hidden = false;
+    video.play().catch(() => {});
+    return;
+  }
+  clearVideo();
+  img.src = src;
+  img.hidden = false;
+}
+
+async function alignWallpaper() {
+  const { core, window: W } = window.__TAURI__;
+  const root = document.documentElement;
   const BG_VARS = ["--desktop-bg-x", "--desktop-bg-y", "--desktop-bg-w", "--desktop-bg-h"];
+  const coverFit = () => BG_VARS.forEach((v) => root.style.removeProperty(v));
 
   let server = "unknown";
   try {
     server = await core.invoke("display_server");
   } catch {}
-
-  const applyImage = (uri) => {
-    if (uri) root.style.setProperty("--desktop-bg", `url("${uri}")`);
-  };
-
-  const align = async () => {
-    // Wayland lies about window position ({0,0}); acting on it paints the wrong
-    // slice of wallpaper. Cover-fit the window instead (clear the vars).
-    if (server !== "x11") {
-      for (const v of BG_VARS) root.style.removeProperty(v);
-      return;
-    }
-    try {
-      const [pos, mon, scale] = await Promise.all([
-        win.outerPosition(),
-        W.currentMonitor(),
-        win.scaleFactor(),
-      ]);
-      if (!mon) return;
-      const s = scale || 1;
-      root.style.setProperty("--desktop-bg-x", `${-(pos.x - mon.position.x) / s}px`);
-      root.style.setProperty("--desktop-bg-y", `${-(pos.y - mon.position.y) / s}px`);
-      root.style.setProperty("--desktop-bg-w", `${mon.size.width / s}px`);
-      root.style.setProperty("--desktop-bg-h", `${mon.size.height / s}px`);
-    } catch {}
-  };
-
+  // Wayland lies about window position ({0,0}); acting on it paints the wrong
+  // slice of wallpaper, so cover-fit the window instead.
+  if (server !== "x11") return coverFit();
   try {
-    applyImage(await core.invoke("desktop_background"));
-  } catch {}
-  await align();
-  try {
-    win.onMoved(align);
-    win.onResized(align);
-    event.listen("desktop-background", (e) => applyImage(e.payload));
-  } catch {}
+    const win = W.getCurrentWindow();
+    const [pos, mon, scale] = await Promise.all([
+      win.outerPosition(),
+      W.currentMonitor(),
+      win.scaleFactor(),
+    ]);
+    if (!mon) return coverFit();
+    const s = scale || 1;
+    root.style.setProperty("--desktop-bg-x", `${-(pos.x - mon.position.x) / s}px`);
+    root.style.setProperty("--desktop-bg-y", `${-(pos.y - mon.position.y) / s}px`);
+    root.style.setProperty("--desktop-bg-w", `${mon.size.width / s}px`);
+    root.style.setProperty("--desktop-bg-h", `${mon.size.height / s}px`);
+  } catch {
+    coverFit();
+  }
 }
+
+async function applyWallpaper(cfg) {
+  const { core } = window.__TAURI__;
+  const root = document.documentElement;
+  wallpaperCfg = cfg;
+
+  root.style.setProperty("--wallpaper-fit", cfg.fit || "cover");
+  root.style.setProperty("--wallpaper-dim", String(cfg.dim ?? 0));
+  root.style.setProperty("--wallpaper-blur", `${cfg.blur ?? 0}px`);
+  // A blur samples past the edges and would feather in the backdrop; scaling
+  // up by roughly the bleed hides it.
+  root.style.setProperty("--wallpaper-blur-scale", String((cfg.blur ?? 0) / 400));
+
+  const video = document.getElementById("wallpaper-video");
+  video.muted = cfg.muted !== false;
+  video.loop = cfg.loop !== false;
+
+  if (cfg.source === "file" && cfg.path) {
+    await setWallpaperMedia(core.convertFileSrc(cfg.path), cfg.kind);
+    // A picked file has no desktop to line up with — always cover-fit.
+    for (const v of ["--desktop-bg-x", "--desktop-bg-y", "--desktop-bg-w", "--desktop-bg-h"]) {
+      root.style.removeProperty(v);
+    }
+    return;
+  }
+  if (cfg.source === "desktop") {
+    let uri = null;
+    try {
+      uri = await core.invoke("desktop_background");
+    } catch {}
+    await setWallpaperMedia(uri, "image");
+    await alignWallpaper();
+    return;
+  }
+  await setWallpaperMedia(null);
+}
+
+function initWallpaperMenu() {
+  const { core } = window.__TAURI__;
+  const openBtn = document.getElementById("wallpaper-btn");
+  const panel = document.getElementById("wallpaper-panel");
+  const err = document.getElementById("wp-error");
+  const pathEl = document.getElementById("wp-path");
+  const dim = document.getElementById("wp-dim");
+  const blur = document.getElementById("wp-blur");
+  const muted = document.getElementById("wp-muted");
+
+  // The desktop wallpaper is only resolvable on Linux (window::desktop_background).
+  document.getElementById("wp-source-desktop").disabled = !IS_LINUX;
+
+  const showError = (e) => {
+    if (e) return showWallpaperError(e?.message || e);
+    err.textContent = "";
+    err.hidden = true;
+  };
+
+  const sync = () => {
+    const c = wallpaperCfg || {};
+    for (const b of panel.querySelectorAll("#wp-source button")) {
+      b.classList.toggle("active", b.dataset.source === c.source);
+    }
+    for (const b of panel.querySelectorAll("#wp-fit button")) {
+      b.classList.toggle("active", b.dataset.fit === (c.fit || "cover"));
+    }
+    pathEl.textContent = c.source === "file" && c.path ? c.path : "";
+    dim.value = String(Math.round((c.dim ?? 0) * 100));
+    blur.value = String(c.blur ?? 0);
+    muted.checked = c.muted !== false;
+    document.getElementById("wp-mute-row").hidden = c.kind !== "video" || c.source !== "file";
+  };
+
+  // Persist through Rust, which validates the path, grants asset access to it
+  // and returns the config it actually stored.
+  const commit = async (patch) => {
+    showError(null);
+    try {
+      const saved = await core.invoke("wallpaper_set", {
+        config: { ...wallpaperCfg, ...patch },
+      });
+      await applyWallpaper(saved);
+      sync();
+    } catch (e) {
+      showError(e);
+    }
+  };
+
+  panel.addEventListener("click", async (e) => {
+    const btn = e.target.closest("button");
+    if (!btn || btn.disabled) return;
+    if (btn.dataset.fit) return commit({ fit: btn.dataset.fit });
+    if (!btn.dataset.source) return;
+    if (btn.dataset.source !== "file") return commit({ source: btn.dataset.source });
+    // No bundler, so no plugin guest JS — call the plugin command directly.
+    let picked = null;
+    try {
+      picked = await core.invoke("plugin:dialog|open", {
+        options: {
+          title: "Choose a wallpaper",
+          multiple: false,
+          directory: false,
+          filters: [
+            {
+              name: "Images and video",
+              extensions: [
+                "jpg", "jpeg", "png", "webp", "gif", "bmp", "avif",
+                "mp4", "webm", "mkv", "mov", "m4v", "ogv",
+              ],
+            },
+          ],
+        },
+      });
+    } catch (e) {
+      return showError(e);
+    }
+    // The plugin returns a path, or {path} depending on version; and null on cancel.
+    const path = typeof picked === "string" ? picked : picked?.path;
+    if (path) await commit({ source: "file", path });
+  });
+
+  dim.addEventListener("input", () => {
+    document.documentElement.style.setProperty("--wallpaper-dim", String(dim.value / 100));
+  });
+  dim.addEventListener("change", () => commit({ dim: Number(dim.value) / 100 }));
+  blur.addEventListener("input", () => {
+    document.documentElement.style.setProperty("--wallpaper-blur", `${blur.value}px`);
+    document.documentElement.style.setProperty(
+      "--wallpaper-blur-scale",
+      String(Number(blur.value) / 400),
+    );
+  });
+  blur.addEventListener("change", () => commit({ blur: Number(blur.value) }));
+  muted.addEventListener("change", () => commit({ muted: muted.checked }));
+
+  openBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.getElementById("display-menu").hidden = true;
+    showError(null);
+    sync();
+    panel.hidden = !panel.hidden;
+  });
+  // The document-level click that closes the pickers must not fire for clicks
+  // inside the panel — dragging a slider would otherwise dismiss it.
+  panel.addEventListener("click", (e) => e.stopPropagation());
+  panel.addEventListener("pointerdown", (e) => e.stopPropagation());
+  document.addEventListener("click", () => {
+    panel.hidden = true;
+  });
+}
+
 
 window.addEventListener("DOMContentLoaded", async () => {
   restoreWindowState(); // async, fire-and-forget: reposition ASAP
   updateClock();
   setInterval(updateClock, 1000);
-  // The interactivity gate is ⌥ on macOS, Alt elsewhere.
-  if (!navigator.platform.includes("Mac")) {
-    document.getElementById("mod-hint").textContent = "alt interact";
+  // The interactivity gate is ⌥ on macOS and Alt on Windows. Linux has no
+  // gate at all (window::spawn_interactivity_watch is a no-op there and never
+  // emits "interactive"), so the hint would be a lie and the accent state
+  // would never light — mark the HUD interactive and drop the hint.
+  const modHint = document.getElementById("mod-hint");
+  if (IS_LINUX) {
+    modHint.hidden = true;
+    document.body.classList.add("interactive");
+  } else if (!IS_MAC) {
+    modHint.textContent = "alt interact";
   }
   // Linux/WebKitGTK transparency workaround (see base.css and CLAUDE.md):
   // WebKitGTK on NVIDIA renders a transparent window's see-through regions as
@@ -2226,12 +2501,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   // through. `.is-linux` also drops backdrop-filter (a no-op over a would-be
   // transparent surface). The solid fallback colour lives in base.css for when
   // the wallpaper can't be resolved (e.g. COSMIC's rotating folder).
-  if (navigator.platform.includes("Linux")) {
+  if (IS_LINUX) {
     document.documentElement.classList.add("is-linux");
-    setupLinuxWallpaper();
   }
+  setupWallpaper();
   initThemePicker();
   initDisplayMenu();
+  initWallpaperMenu();
   initWindowHandles();
   initWindowStateSaver();
   initLayout();

@@ -1,4 +1,5 @@
 mod collectors;
+mod wallpaper;
 mod window;
 
 use tauri::Manager;
@@ -25,6 +26,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -36,6 +38,9 @@ pub fn run() {
             window::set_desktop_layer(&main);
             window::spawn_interactivity_watch(main.clone());
             window::spawn_wallpaper_watch(main.clone());
+            // The asset-protocol scope is runtime state, so the saved
+            // wallpaper has to be re-granted on every launch.
+            wallpaper::init(app.handle());
             collectors::spawn_all(app.handle());
             Ok(())
         })
@@ -43,6 +48,9 @@ pub fn run() {
             window::set_overlay,
             window::desktop_background,
             window::display_server,
+            wallpaper::wallpaper_config,
+            wallpaper::wallpaper_set,
+            wallpaper::wallpaper_media_url,
             collectors::frontend_ready,
             collectors::music::music_control,
             collectors::music::music_playlists,

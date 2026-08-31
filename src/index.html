@@ -16,6 +16,14 @@
   </head>
 
   <body>
+    <!-- Backdrop, painted behind the glass panels. Filled in by setupWallpaper()
+         from the desktop wallpaper, a user-picked image/video, or nothing.
+         A real element rather than a pseudo-element because a ::before can't
+         host a <video>. -->
+    <div id="wallpaper-layer" aria-hidden="true">
+      <img id="wallpaper-img" alt="" hidden />
+      <video id="wallpaper-video" muted loop playsinline hidden></video>
+    </div>
     <div class="hud">
       <header class="hud-header">
         <div class="brand-group">
@@ -55,6 +63,39 @@
               <div id="display-monitors"></div>
               <button id="fill-toggle">Fill screen</button>
               <button id="autostart-toggle">Start at login</button>
+              <button id="wallpaper-btn">Wallpaper…</button>
+            </div>
+            <div class="theme-menu wallpaper-panel" id="wallpaper-panel" hidden>
+              <div class="wp-row">
+                <span class="wp-label">Source</span>
+                <div class="wp-seg" id="wp-source">
+                  <button data-source="desktop" id="wp-source-desktop">Desktop</button>
+                  <button data-source="file">File…</button>
+                  <button data-source="none">None</button>
+                </div>
+              </div>
+              <div class="wp-path" id="wp-path"></div>
+              <div class="wp-row">
+                <span class="wp-label">Fit</span>
+                <div class="wp-seg" id="wp-fit">
+                  <button data-fit="cover">Cover</button>
+                  <button data-fit="contain">Contain</button>
+                  <button data-fit="fill">Fill</button>
+                </div>
+              </div>
+              <label class="wp-row">
+                <span class="wp-label">Dim</span>
+                <input type="range" id="wp-dim" min="0" max="100" step="5" />
+              </label>
+              <label class="wp-row">
+                <span class="wp-label">Blur</span>
+                <input type="range" id="wp-blur" min="0" max="60" step="2" />
+              </label>
+              <label class="wp-row wp-check" id="wp-mute-row">
+                <input type="checkbox" id="wp-muted" />
+                <span class="wp-label">Mute video</span>
+              </label>
+              <div class="wp-error" id="wp-error" hidden></div>
             </div>
           </div>
           <button class="pin-toggle" id="edit-toggle" aria-label="Edit layout" title="Edit layout">
@@ -223,7 +264,7 @@
         <button class="tray-reset" id="tray-reset">RESET LAYOUT</button>
       </div>
     </div>
-    <div class="win-move" id="win-move" title="Move window (hold Alt and drag)">✥ move</div>
-    <div class="win-resize" id="win-resize" title="Resize window (hold Alt and drag)"></div>
+    <div class="win-move" id="win-move" title="Move window">✥ move</div>
+    <div class="win-resize" id="win-resize" title="Resize window"></div>
   </body>
 </html>

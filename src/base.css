@@ -73,6 +73,105 @@
   font-size: 0.75rem;
 }
 
+/* ── wallpaper panel ────────────────────────────────────────
+   Same chrome as the pickers above, but a form rather than a list. */
+
+/* Anchored left like the other dropdowns: the display picker sits at the far
+   left of the header, so a right-anchored 260px panel would hang off-screen. */
+.wallpaper-panel {
+  gap: 10px;
+  width: 260px;
+  padding: 12px;
+}
+
+.wp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* display:flex would otherwise win over the UA rule for [hidden]. */
+.wp-row[hidden] {
+  display: none;
+}
+
+.wp-label {
+  flex: 0 0 42px;
+  font: 500 0.72rem/1 "Inter", system-ui, sans-serif;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(201, 204, 211, 0.65);
+}
+
+/* Segmented control: the panel's buttons are choices, not menu rows, so the
+   .theme-menu swatch dot and tick are suppressed. */
+.wp-seg {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  padding: 2px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 7px;
+}
+
+.wp-seg button {
+  flex: 1;
+  justify-content: center;
+  padding: 6px 4px;
+  font-size: 0.74rem;
+}
+
+.wp-seg button::before,
+.wp-seg button.active::after {
+  content: none;
+}
+
+.wp-seg button.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+.wp-seg button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.wp-path {
+  font: 400 0.7rem/1.3 "JetBrains Mono", ui-monospace, monospace;
+  color: rgba(201, 204, 211, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the filename visible when the path is long */
+  text-align: left;
+}
+
+.wp-path:empty {
+  display: none;
+}
+
+.wp-row input[type="range"] {
+  flex: 1;
+  accent-color: #c9ccd3;
+}
+
+.wp-check {
+  gap: 8px;
+}
+
+.wp-check .wp-label {
+  flex: 1;
+}
+
+.wp-error {
+  font: 400 0.72rem/1.35 "Inter", system-ui, sans-serif;
+  color: #e8736a;
+}
+
+.wp-error[hidden] {
+  display: none;
+}
+
 /* ── display menu (monitor picker + fill toggle) ────────────
    Reuses .theme-menu chrome; monitors have no color swatch. */
 
@@ -98,7 +197,8 @@
 }
 
 /* ── window move/resize grips, visible only in edit mode ────
-   Like widget editing, they need the window interactive (Alt). */
+   On macOS/Windows the HUD is click-through until ⌥/Alt is held, so these
+   need the window interactive; on Linux the HUD is always interactive. */
 
 .win-move,
 .win-resize {
@@ -133,6 +233,14 @@ body.editing .win-resize {
 .win-move:hover {
   color: #fff;
   border-color: rgba(255, 255, 255, 0.35);
+}
+
+/* Filled/maximized: the OS ignores move & resize drags, so the grips say so
+   instead of looking live and doing nothing. */
+.win-move.is-disabled,
+.win-resize.is-disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .win-resize {
@@ -194,6 +302,7 @@ body.editing .win-resize {
    small keeps the headline numbers and drops secondary content.
    main.js stamps data-size (s/m/l) on each widget. */
 .widget[data-size="s"] .dc-friends,
+.widget[data-size="s"] .dc-friends-hint,
 .widget[data-size="s"] .coin-spark,
 .widget[data-size="s"] .gh-repo,
 .widget[data-size="s"] .gh-wall,
@@ -202,6 +311,7 @@ body.editing .win-resize {
 .widget[data-size="s"] .playlist-list,
 .widget[data-size="s"] .st-list,
 .widget[data-size="s"] .st-delta,
+.widget[data-size="s"] .st-note,
 .widget[data-size="s"] .track-artist,
 .widget[data-size="s"] .tt-grid,
 .widget[data-size="s"] .stag-section,
@@ -361,6 +471,14 @@ body.editing .win-resize {
   opacity: 0.4;
 }
 
+/* Shown instead of the app list when the session can time the screen but not
+   name the focused window (GNOME on Wayland). */
+.st-note {
+  font-size: 0.72rem;
+  opacity: 0.5;
+  line-height: 1.35;
+}
+
 .st-delta {
   font: 400 0.72rem/1.4 "Inter", system-ui, sans-serif;
   opacity: 0.55;
@@ -483,9 +601,18 @@ body.editing .win-resize {
 .music-main {
   display: flex;
   align-items: center;
-  justify-content: center; /* the art+info block sits mid-widget */
+  /* The art+info block sits mid-widget, but a *centered* flex line that
+     overflows spills on BOTH sides — and .widget{overflow:hidden} then clips
+     the leading item, i.e. the cover art. `safe center` degrades to flex-start
+     the moment the line overflows, so a long title can only ever cost the
+     title. The plain `center` above it is the fallback for engines without
+     the safe/unsafe alignment keywords. */
+  justify-content: center;
+  justify-content: safe center;
   gap: 14px;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
 }
 
 /* transport centered at every size */
@@ -498,7 +625,7 @@ body.editing .win-resize {
   aspect-ratio: 1;
   object-fit: cover;
   border-radius: 10px;
-  flex-shrink: 0;
+  flex: 0 0 auto;
 }
 
 .widget[data-size="l"] .music-art {
@@ -509,15 +636,25 @@ body.editing .win-resize {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 0 1 auto;
   min-width: 0;
+  overflow: hidden;
+}
+
+/* Truncation is structural, so it lives here rather than in the themes — the
+   theme stylesheet is swapped by re-pointing #theme-css, and for a frame only
+   base.css applies. Themes set the font and colour only. */
+.track-title,
+.track-artist,
+.track-album {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .track-album {
   font: 400 0.74rem/1.3 "Inter", system-ui, sans-serif;
   opacity: 0.55;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .music-progress {
@@ -541,7 +678,18 @@ body.editing .win-resize {
   border-radius: 2px;
   background: currentColor;
   opacity: 0.75;
-  transition: width 0.5s linear;
+  /* Shorter than the 1 s tick so the tween finishes before the next update
+     instead of permanently chasing it. */
+  transition: width 0.2s linear;
+}
+
+/* Elapsed known, total unknown: drop the bar and centre the time. */
+.music-progress--no-total {
+  justify-content: center;
+}
+
+.music-progress--no-total .music-progress-track {
+  display: none;
 }
 
 .music-progress-time {
@@ -759,6 +907,15 @@ body.editing .win-resize {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Shown when nobody is configured — the list is hand-built, so an empty
+   widget would otherwise read as a failure. */
+.dc-friends-hint {
+  font-size: 0.72rem;
+  opacity: 0.45;
+  line-height: 1.35;
+  margin-top: 2px;
 }
 
 .dc-friends {
@@ -1234,22 +1391,51 @@ html.is-linux {
   background-color: #0a0c11;
 }
 
-/* The wallpaper underlay. It is sized to the whole monitor and shifted by the
-   window's offset within that monitor (--desktop-bg-* set from JS), so it is an
-   exact continuation of the real desktop showing around the window — the seams
-   at the window border and the panel strip disappear. When JS can't learn the
-   window's position (Wayland), the defaults cover-fit the viewport instead. */
-html.is-linux::before {
-  content: "";
+
+/* ── wallpaper underlay ─────────────────────────────────────
+   The HUD's backdrop: the desktop wallpaper (Linux), a user-picked image or
+   video, or nothing. A real element rather than a ::before because a
+   pseudo-element cannot host a <video>.
+
+   Positioning serves the Linux seam trick: the layer is sized to the whole
+   monitor and shifted by the window's offset within it (--desktop-bg-* set
+   from JS), so the image is an exact continuation of the real desktop showing
+   around the window and the seams at the border and panel strip disappear.
+   When JS can't learn the window's position (Wayland lies, reporting {0,0}) —
+   or when the source is a picked file, where there is nothing to line up with —
+   the defaults simply cover-fit the viewport.
+
+   z-index: -1 on a child of <body> paints behind .hud but above the root
+   background; nothing in the ancestor chain creates a stacking context. */
+
+#wallpaper-layer {
   position: fixed;
   left: var(--desktop-bg-x, 0);
   top: var(--desktop-bg-y, 0);
   width: var(--desktop-bg-w, 100vw);
   height: var(--desktop-bg-h, 100vh);
-  background-image: var(--desktop-bg, none);
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
   z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+#wallpaper-img,
+#wallpaper-video {
+  width: 100%;
+  height: 100%;
+  object-fit: var(--wallpaper-fit, cover);
+  object-position: center;
+  filter: blur(var(--wallpaper-blur, 0px));
+  /* The blur samples past the edges and would show the backdrop through the
+     feathered border; scaling up hides that. */
+  transform: scale(calc(1 + var(--wallpaper-blur-scale, 0)));
+}
+
+/* Dim overlay, so a busy wallpaper doesn't compete with the widgets. */
+#wallpaper-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, var(--wallpaper-dim, 0));
   pointer-events: none;
 }
