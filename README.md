@@ -22,7 +22,8 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 - 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
 - Five themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Terminal** (phosphor green).
-- The HUD is click-through so it never steals input. Hold **⌥ Option** to interact with it (buttons, chips, edit mode). The pin button flips it above all windows temporarily.
+- On macOS and Windows the HUD is click-through so it never steals input: hold **⌥ Option** / **Alt** to interact with it (buttons, chips, edit mode). On **Linux** there is no gate — the HUD is always interactive, so the hint isn't shown. The pin button flips it above all windows temporarily.
+- **Wallpaper** (display menu → *Wallpaper…*): pick any image or video as the HUD's backdrop, with fit, dim and blur. On Linux the default is your real desktop wallpaper (the window has to be opaque there — see the WebKitGTK note below); elsewhere the default is none, and setting one makes the window opaque behind the glass. Video is muted and looping, and pauses while the window is hidden.
 
 ## Accounts & secrets
 
@@ -46,6 +47,23 @@ npm run tauri dev     # development
 npm run tauri build   # release bundle
 ```
 
+### Tests
+
+```sh
+npm test                                    # frontend logic (node --test)
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+Two dev helpers live in `scripts/dev/`, for the parts a unit test can't reach:
+
+- `fake-mpris.py` publishes a fake MPRIS player so NOW PLAYING can be driven
+  into its awkward states on demand — a 200-character title, a cover URL that
+  404s, a position that errors, a position that never advances. Needs
+  `python3-dbus` and `python3-gi`.
+- `screentime-probe.sh` prints the session facilities the screen-time tracker
+  picks its backend from, so "the tracker is broken" is distinguishable from
+  "this session exposes nothing".
+
 ### macOS
 
 Everything works here — this is the primary platform.
@@ -56,7 +74,7 @@ Everything works here — this is the primary platform.
   ```
   Without this the GPU ring simply stays empty.
 - **Now Playing**: the first playback poll triggers a macOS Automation prompt ("aria wants to control Music") — click OK once.
-- Remember: hold **⌥** to click anything on the HUD.
+- Remember: hold **⌥** to click anything on the HUD (macOS and Windows only).
 
 ### Windows
 
@@ -75,10 +93,27 @@ If something misbehaves, it will be one of these — issues welcome.
 Cross-platform widgets work, plus:
 
 - **GPU gauge** via `nvidia-smi` (NVIDIA cards; the gauge stays blank on other GPUs).
-- **NOW PLAYING** over MPRIS via `playerctl` — covers Spotify, VLC and any browser tab exposing a media session; transport buttons work, playlist chips are Apple-Music-only and don't render. Cover art is inlined (the CSP forbids remote images): Chromium-based browsers publish a local cover and Spotify an `https` one, so they show artwork and the real title; Firefox exposes very little for some sites (e.g. Netflix shows only "Netflix", no art). Needs `playerctl` installed.
-- **SCREEN TIME** via a small Wayland client — the focused window from COSMIC's `zcosmic-toplevel-info` and idle from `ext-idle-notify`. COSMIC-specific for now (no active-window/idle path exists on plain GNOME/Wayland); the tracker simply records nothing elsewhere. Protocol bindings are generated from vendored, permissively-licensed XML in `src-tauri/protocols/`, so no GPL cosmic crate is pulled into this MIT project.
+- **NOW PLAYING** over MPRIS via `playerctl` — covers Spotify, VLC and any browser tab exposing a media session; transport buttons work, playlist chips are Apple-Music-only and don't render. The player is pinned per sample, so several media sessions at once can't cross-wire the title and the position. A player that reports no position, or one that never advances, hides the progress bar instead of running a meaningless counter. Cover art is inlined (the CSP forbids remote images) and fetched off the poll path: Chromium-based browsers publish a local cover and Spotify an `https` one, so they show artwork and the real title; Firefox exposes very little for some sites (e.g. Netflix shows only "Netflix", no art). Needs `playerctl` installed.
+
+  **Browser tabs get an elapsed time, but no progress bar.** Firefox's media session publishes no `mpris:length`, and its `Position` counts the whole listening session rather than the current track — measured against Apple Music web it ran past 19 000 s (5+ hours) while the track changed underneath it. That clock is sound though: it advances at exactly 1× and runs straight through a track change without a blip, so ARIA recovers the elapsed time within a track by noting where it stood when the title last changed. Join mid-track and no time is shown until the next track starts, because how far in you already are is genuinely unknowable. The track *length* is not recoverable at all — it is only knowable once the track has ended — so no bar is drawn rather than one clamped to a guess. Native players (Spotify, VLC, mpv) report both properly and get a real bar.
+- **SCREEN TIME** picks a backend from the session:
+  - **X11** (GNOME/Xorg and any other X11 WM) — focused window from `_NET_ACTIVE_WINDOW`, idle from MIT-SCREEN-SAVER. Full per-app breakdown.
+  - **Wayland + COSMIC** (`zcosmic-toplevel-info`) or **wlroots-family** compositors — KDE Plasma, sway, Hyprland, wayfire (`zwlr-foreign-toplevel-management`). Full per-app breakdown, idle from `ext-idle-notify`.
+  - **GNOME on Wayland** — Mutter implements `ext-idle-notify` but publishes no focused-window protocol at all, so the widget reports total screen time and says why there are no per-app rows.
+
+  Protocol bindings are generated from vendored, permissively-licensed XML in `src-tauri/protocols/`, so no GPL cosmic crate is pulled into this MIT project.
 
 Still pending: the desktop layer (`_NET_WM_WINDOW_TYPE_DESKTOP`) — the window currently sits as a normal, opaque window (see the WebKitGTK/NVIDIA note in the repo). Secret storage uses the Secret Service, so GNOME Keyring or KWallet must be running.
+
+Note for GNOME/Xorg: Mutter auto-maximizes windows that ask for the whole work area, so *Fill screen* maximizes explicitly and the move/resize grips are disabled while it's on (a maximized X11 window ignores both).
+
+**Video wallpapers on Linux** need a decoder for whatever you pick. WebM/VP8/VP9 works out of the box; **H.264 (most `.mp4` files) needs `gstreamer1.0-libav`**:
+
+```sh
+sudo apt install gstreamer1.0-libav
+```
+
+Without it the wallpaper panel reports that the video could not be played. Video is served to the webview over a loopback HTTP server on `127.0.0.1` rather than the asset protocol — WebKitGTK's media player runs on GStreamer, which cannot load wry's custom `asset:` scheme (an `<img>` loads, a `<video>` fails with `FormatError`) and mis-plays `blob:` URLs (`readyState` 4, `currentTime` stuck at 0). HTTP with byte ranges is the only path that actually plays, and the only one that streams a large file instead of buffering it whole. The server binds an ephemeral port on loopback and serves exactly one file behind a per-process random path.
 
 ## Connecting the services
 
@@ -99,7 +134,7 @@ Needs a bot in the server(s) you want to watch (~10 min, free):
 3. Invite it with zero permissions: `https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot&permissions=0` — membership is all it needs. Give its role access to any restricted voice channels you want visible. Repeat per server.
 4. In Discord enable Developer Mode (Settings → Advanced), right-click each server → **Copy Server ID**.
 5. Paste token + server ID(s) (comma separated) into the widget.
-6. Friends list: widget gear → **FRIENDS** — add with a user's ID (right-click user → **Copy User ID**) and any display name; applies live.
+6. Friends list: **edit mode (✎) → widget gear ⚙ → FRIENDS** — add with a user's ID (right-click user → **Copy User ID**) and any display name; applies live. Discord gives bots no access to your actual friends list, so this is deliberately hand-built. A person only shows a live status if they share one of the watched servers — presence arrives per guild — otherwise they stay `offline`.
 
 Channel "popularity" accrues automatically — one point per person-minute in voice, stored locally, so your group's usual channels bubble to the top.
 
