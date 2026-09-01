@@ -20,7 +20,9 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 
 ## The board
 
-- 12×6 grid; every widget has S/M/L size presets and adapts its content to the size. (TERMINAL has only M and L — see below.)
+- 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
+- **Every preset is 3, 6 or 12 columns wide** — a third, a half or the whole board — so any mix of widgets tiles without leaving slivers no other widget fits. Heights are free and just stack. S is `[3,1]` (one-line headline), M is `[3,2]` (the standard tile), L is `[6,3]` (double-wide feature). STAG and TERMINAL are the only exceptions, and only on width: a five-day timetable and an 80-column shell do not fit in a third of the board, so they take `[6,…]` and `[12,…]`.
+- The default board fills all 72 cells exactly, with SCREEN TIME and CALENDAR starting in the tray. `npm test` checks that it still tiles.
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
 - Five themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Terminal** (phosphor green).
 - On macOS and Windows the HUD is click-through so it never steals input: hold **⌥ Option** / **Alt** to interact with it (buttons, chips, edit mode). On **Linux** there is no gate — the HUD is always interactive, so the hint isn't shown. The pin button flips it above all windows temporarily.
@@ -31,8 +33,8 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 Your login shell (`$SHELL -l`, PowerShell on Windows) on a genuine PTY, so it is
 a terminal and not a command runner: password prompts, `apt` progress bars,
 Ctrl-C, job control and `SIGWINCH` reflow all work. It starts in the tray —
-drag it onto the board and the shell spawns; it is never started for a widget
-you have not placed. The ⟳ in the widget's header (or `Ctrl+Shift+R`) throws the
+it spawns its shell the first time it is placed on the board, and never runs
+for a widget sitting in the tray. The ⟳ in the widget's header (or `Ctrl+Shift+R`) throws the
 current shell away and starts a clean one — back in your home directory, blank
 screen, rc file and its fastfetch run again.
 

@@ -1,6 +1,7 @@
 import { drawGauge } from "./gauge.js";
 import { progressAt } from "./lib/music.js";
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
+import { WIDGETS, defaultLayout } from "./lib/widgets.js";
 import {
   GRID_COLS,
   GRID_ROWS,
@@ -1595,36 +1596,8 @@ function initPinToggle() {
 // Edit mode (pencil in the header) allows drag-to-move, size cycling,
 // and hiding widgets into a tray. Layout persists in localStorage.
 
-// home = [col, row, size] — the default board mirrors the original design.
-const WIDGETS = {
-  hardware:   { sizes: { s: [4, 1], m: [4, 2], l: [6, 2] }, home: [1, 1, "m"] },
-  music:      { sizes: { s: [4, 1], m: [4, 2], l: [6, 3] }, home: [1, 3, "m"] },
-  discord:    { sizes: { s: [4, 1], m: [4, 2], l: [5, 3] }, home: [1, 5, "m"] },
-  stag:       { sizes: { s: [5, 2], m: [5, 4], l: [8, 4] }, home: [5, 1, "m"] },
-  email:      { sizes: { s: [5, 1], m: [5, 2], l: [5, 4] }, home: [5, 5, "m"] },
-  // The default board fills the 12×6 grid, so calendar starts in the tray;
-  // drag it in (or shrink another widget) to place it.
-  calendar:   { sizes: { s: [4, 1], m: [4, 2], l: [6, 4] }, home: [1, 1, "m"], defaultHidden: true },
-  github:     { sizes: { s: [3, 1], m: [3, 2], l: [5, 3] }, home: [10, 1, "m"] },
-  crypto:     { sizes: { s: [3, 1], m: [3, 2], l: [5, 2] }, home: [10, 3, "m"] },
-  screentime: { sizes: { s: [3, 1], m: [3, 2], l: [3, 3] }, home: [10, 5, "m"] },
-  // No S preset: below ~80x20 the Pop!_OS fastfetch block clips and a shell
-  // stops being usable, so the terminal offers only sizes it can honour. It
-  // also starts in the tray — the default board is full, and a widget nobody
-  // has placed should not be spawning a login shell.
-  terminal:   { sizes: { m: [6, 3], l: [12, 6] }, home: [1, 1, "m"], defaultHidden: true },
-};
-
 let layout = loadLayout();
 normalizeLayout();
-
-function defaultLayout() {
-  const l = {};
-  for (const [id, w] of Object.entries(WIDGETS)) {
-    l[id] = { c: w.home[0], r: w.home[1], size: w.home[2], hidden: !!w.defaultHidden };
-  }
-  return l;
-}
 
 function loadLayout() {
   const base = defaultLayout();
