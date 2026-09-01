@@ -24,14 +24,19 @@
  * arbitrary scattering.
  */
 export const WIDGETS = {
+  // STAG and TERMINAL share a footprint so they sit level side by side, and
+  // so an L of either is the top two-thirds of the board with a strip of
+  // widgets still visible underneath — a full-board terminal would leave
+  // nothing to glance at, which is the whole point of the HUD.
   stag:       { sizes: { s: [3, 2], m: [6, 4], l: [12, 4] }, home: [1, 1, "m"] },
-  terminal:   { sizes: { m: [6, 3], l: [12, 6] }, home: [7, 1, "m"] },
-  hardware:   { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [7, 4, "m"] },
-  github:     { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [10, 4, "m"] },
-  email:      { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 5, "m"] },
+  terminal:   { sizes: { m: [6, 4], l: [12, 4] }, home: [7, 1, "m"] },
+  hardware:   { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 5, "m"] },
   music:      { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [4, 5, "m"] },
-  // The bottom strip is one row tall, which is exactly what S is for: the
-  // glanceable headline (who is in voice, the current price) with no list.
+  // The bottom-right strip is one row tall, which is exactly what S is for:
+  // the glanceable headline (unread count, who is in voice, the current
+  // price) with the list dropped.
+  email:      { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [7, 5, "s"] },
+  github:     { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [10, 5, "s"] },
   discord:    { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [7, 6, "s"] },
   crypto:     { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [10, 6, "s"] },
   // The default board is full, so these two start in the tray; drag them in

@@ -21,7 +21,7 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 ## The board
 
 - 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
-- **Every preset is 3, 6 or 12 columns wide** — a third, a half or the whole board — so any mix of widgets tiles without leaving slivers no other widget fits. Heights are free and just stack. S is `[3,1]` (one-line headline), M is `[3,2]` (the standard tile), L is `[6,3]` (double-wide feature). STAG and TERMINAL are the only exceptions, and only on width: a five-day timetable and an 80-column shell do not fit in a third of the board, so they take `[6,…]` and `[12,…]`.
+- **Every preset is 3, 6 or 12 columns wide** — a third, a half or the whole board — so any mix of widgets tiles without leaving slivers no other widget fits. Heights are free and just stack. S is `[3,1]` (one-line headline), M is `[3,2]` (the standard tile), L is `[6,3]` (double-wide feature). STAG and TERMINAL are the only exceptions, and only on width: a five-day timetable and an 80-column shell do not fit in a third of the board. They share a footprint — `[6,4]` and `[12,4]` — so they sit level beside each other, and an L of either leaves the bottom two rows for a strip of widgets to still glance at.
 - The default board fills all 72 cells exactly, with SCREEN TIME and CALENDAR starting in the tray. `npm test` checks that it still tiles.
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
 - Five themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Terminal** (phosphor green).
@@ -45,9 +45,10 @@ Two things to know:
   work; kitty's **graphics protocol** does not, so a fastfetch image logo needs
   `--logo-type ascii`. `$ARIA_TERM` is set to `1` if you want to branch on it in
   your rc.
-- **M is 74×17 cells** in the default window and 115×26 on a 1080p fullscreen
-  board; **L** is 155×39 and 237×56. There is no S preset: the Pop!\_OS
-  fastfetch block wants ~80×20 and anything smaller just clips.
+- At the default 12 px font, **M is about 80×29 cells** in the default window
+  and 125×42 on a 1080p fullscreen board; **L** is 168×29 and 257×42. There is
+  no S preset: the Pop!\_OS fastfetch block wants ~80×20, and a third of the
+  board cannot give it that at any font size worth reading.
 
 | Key | Does |
 |---|---|
