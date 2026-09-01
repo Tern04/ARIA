@@ -99,6 +99,24 @@
               <div class="wp-error" id="wp-error" hidden></div>
             </div>
           </div>
+          <div class="theme-picker preset-picker">
+            <button class="pin-toggle" id="preset-btn" aria-label="Board presets" title="Board presets">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="7" height="7" rx="1.5" />
+                <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                <rect x="3" y="14" width="7" height="7" rx="1.5" />
+                <rect x="14" y="14" width="7" height="7" rx="1.5" />
+              </svg>
+            </button>
+            <div class="theme-menu preset-menu" id="preset-menu" hidden>
+              <div class="preset-list" id="preset-list"></div>
+              <button class="preset-save" id="preset-save">+ Save current board</button>
+              <form class="preset-new" id="preset-new" hidden>
+                <input id="preset-name" type="text" placeholder="preset name" maxlength="24"
+                       autocomplete="off" spellcheck="false" aria-label="Preset name" />
+              </form>
+            </div>
+          </div>
           <button class="pin-toggle" id="edit-toggle" aria-label="Edit layout" title="Edit layout">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" />

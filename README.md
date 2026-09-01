@@ -24,6 +24,7 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 - **Every preset is 3, 6 or 12 columns wide** — a third, a half or the whole board — so any mix of widgets tiles without leaving slivers no other widget fits. Heights are free and just stack. S is `[3,1]` (one-line headline), M is `[3,2]` (the standard tile), L is `[6,3]` (double-wide feature). STAG and TERMINAL are the only exceptions, and only on width: a five-day timetable and an 80-column shell do not fit in a third of the board. They share a footprint — `[6,4]` and `[12,4]` — so they sit level beside each other, and an L of either leaves the bottom two rows for a strip of widgets to still glance at.
 - The default board fills all 72 cells exactly, with SCREEN TIME and CALENDAR starting in the tray. `npm test` checks that it still tiles.
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
+- Grid button → **board presets**: name and save the current arrangement, then switch between them in a click. A preset stores only the board (position, size, hidden), so it survives theme and wallpaper changes; a widget added after the preset was saved arrives at its default spot rather than vanishing. Up to 8, kept in `localStorage`; the tick marks the preset the board currently matches exactly.
 - Five themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Terminal** (phosphor green).
 - On macOS and Windows the HUD is click-through so it never steals input: hold **⌥ Option** / **Alt** to interact with it (buttons, chips, edit mode). On **Linux** there is no gate — the HUD is always interactive, so the hint isn't shown. The pin button flips it above all windows temporarily.
 - **Wallpaper** (display menu → *Wallpaper…*): pick any image or video as the HUD's backdrop, with fit, dim and blur. On Linux the default is your real desktop wallpaper (the window has to be opaque there — see the WebKitGTK note below); elsewhere the default is none, and setting one makes the window opaque behind the glass. Video is muted and looping, and pauses while the window is hidden.
@@ -193,7 +194,7 @@ No setup; CoinGecko's free API.
 | `discord.json` | app config dir¹ | server IDs + friends list (managed by the widget, hand-editable) |
 | `discord-popularity.json` | app data dir¹ | per-channel person-minute tallies |
 | `screentime/` | app data dir¹ | daily usage JSONs |
-| layout / theme | `localStorage` | board arrangement, chosen theme, terminal font size |
+| layout / theme | `localStorage` | board arrangement, saved board presets, chosen theme, terminal font size |
 
 ¹ macOS: `~/Library/Application Support/com.aria.desktop/` — Windows/Linux use the platform-standard config/data dirs.
 

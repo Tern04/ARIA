@@ -179,6 +179,84 @@
   display: none;
 }
 
+/* ── board presets ─────────────────────────────────────────
+   Named snapshots of the layout. Reuses .theme-menu chrome; like the
+   monitor picker these rows have no colour swatch. */
+
+.preset-picker .theme-menu button::before {
+  display: none;
+}
+
+.preset-menu {
+  min-width: 196px;
+}
+
+.preset-list:not(:empty) {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+/* Apply and delete are siblings, not nested buttons. */
+.preset-row {
+  display: flex;
+  align-items: center;
+}
+
+/* Stays a flex row (not a block) so .theme-menu button.active::after can
+   still push its tick to the far edge; the label inside does the truncating. */
+.preset-row .preset-apply {
+  flex: 1;
+  min-width: 0;
+}
+
+.preset-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.preset-row .preset-del {
+  flex: none;
+  padding: 8px 9px;
+  color: rgba(201, 204, 211, 0.35);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.preset-row .preset-del:hover {
+  color: #e57b63;
+  background: rgba(229, 123, 99, 0.12);
+}
+
+.preset-empty {
+  padding: 7px 10px 9px;
+  font: 400 0.74rem/1.35 "Inter", system-ui, sans-serif;
+  color: rgba(201, 204, 211, 0.45);
+}
+
+.preset-new[hidden] {
+  display: none;
+}
+
+.preset-new input {
+  width: 100%;
+  padding: 7px 10px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  font: 500 0.82rem/1 "Inter", system-ui, sans-serif;
+  color: #eceae3;
+}
+
+.preset-new input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
 #display-monitors {
   display: flex;
   flex-direction: column;

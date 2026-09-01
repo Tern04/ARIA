@@ -3,6 +3,14 @@ import { progressAt } from "./lib/music.js";
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import { WIDGETS, defaultLayout } from "./lib/widgets.js";
 import {
+  boardToLayout,
+  matchingPreset,
+  normalizeName,
+  parsePresets,
+  withPreset,
+  withoutPreset,
+} from "./lib/presets.js";
+import {
   GRID_COLS,
   GRID_ROWS,
   fits as fitsIn,
@@ -1828,6 +1836,130 @@ function initLayout() {
   applyLayout();
 }
 
+/* ── board presets ──────────────────────────────────────────
+   Named snapshots of the layout, so a board arranged for coding and one
+   arranged for a lecture day are both one click away. The list logic lives
+   in lib/presets.js; this is the menu around it. */
+
+const PRESETS_KEY = "aria-presets";
+let presets = [];
+
+function persistPresets() {
+  try {
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+  } catch {}
+}
+
+function initPresetMenu() {
+  const btn = document.getElementById("preset-btn");
+  const menu = document.getElementById("preset-menu");
+  const list = document.getElementById("preset-list");
+  const saveBtn = document.getElementById("preset-save");
+  const form = document.getElementById("preset-new");
+  const input = document.getElementById("preset-name");
+
+  try {
+    presets = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
+  } catch {}
+
+  const closeNaming = () => {
+    form.hidden = true;
+    saveBtn.hidden = false;
+    input.value = "";
+  };
+
+  const render = () => {
+    list.replaceChildren();
+    if (!presets.length) {
+      const empty = document.createElement("div");
+      empty.className = "preset-empty";
+      empty.textContent = "No presets yet. Arrange the board, then save it.";
+      list.append(empty);
+      return;
+    }
+    // Marked active only on an exact match, so the tick means "the board is
+    // this preset" rather than "this is the one you last clicked".
+    const active = matchingPreset(layout, presets);
+    for (const preset of presets) {
+      const row = document.createElement("div");
+      row.className = "preset-row";
+      const apply = document.createElement("button");
+      apply.className = "preset-apply";
+      const label = document.createElement("span");
+      label.className = "preset-label";
+      label.textContent = preset.name;
+      apply.append(label);
+      apply.title = `Apply "${preset.name}"`;
+      if (preset.name === active) apply.classList.add("active");
+      apply.addEventListener("click", () => {
+        layout = boardToLayout(preset.board, defaultLayout());
+        // A preset can go stale — a widget's size preset may have changed
+        // shape since it was saved — so it is normalized like any other
+        // layout before being shown.
+        normalizeLayout();
+        saveLayout();
+        applyLayout();
+        menu.hidden = true;
+        closeNaming();
+      });
+      const del = document.createElement("button");
+      del.className = "preset-del";
+      del.textContent = "×";
+      del.title = `Delete "${preset.name}"`;
+      del.setAttribute("aria-label", `Delete preset ${preset.name}`);
+      del.addEventListener("click", () => {
+        presets = withoutPreset(presets, preset.name);
+        persistPresets();
+        render();
+      });
+      row.append(apply, del);
+      list.append(row);
+    }
+  };
+
+  saveBtn.addEventListener("click", () => {
+    saveBtn.hidden = true;
+    form.hidden = false;
+    // Offer the current preset's name so re-saving after a tweak is one Enter.
+    input.value = matchingPreset(layout, presets) ?? "";
+    input.focus();
+    input.select();
+  });
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (!normalizeName(input.value)) return;
+    presets = withPreset(presets, input.value, layout, WIDGETS);
+    persistPresets();
+    closeNaming();
+    render();
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeNaming();
+  });
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.getElementById("theme-menu").hidden = true;
+    document.getElementById("display-menu").hidden = true;
+    document.getElementById("wallpaper-panel").hidden = true;
+    if (menu.hidden) {
+      closeNaming();
+      render();
+    }
+    menu.hidden = !menu.hidden;
+  });
+  // Clicks inside must not reach the document handler below — typing a name
+  // would otherwise dismiss the menu on the first click into the field.
+  menu.addEventListener("click", (e) => e.stopPropagation());
+  menu.addEventListener("pointerdown", (e) => e.stopPropagation());
+  document.addEventListener("click", () => {
+    menu.hidden = true;
+    closeNaming();
+  });
+}
+
 const THEME_NAMES = ["studio", "jarvis", "porcelain", "nord", "terminal"];
 
 function redrawGauges() {
@@ -2454,6 +2586,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   // the shell if the terminal is on the board.
   initTerminal();
   initLayout();
+  initPresetMenu(); // after initLayout(): reads the board it just built
   initGauges();
   initPinToggle();
   initMusicControls();
