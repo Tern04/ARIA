@@ -1,5 +1,6 @@
 import { drawGauge } from "./gauge.js";
 import { progressAt } from "./lib/music.js";
+import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import {
   GRID_COLS,
   GRID_ROWS,
@@ -1607,6 +1608,11 @@ const WIDGETS = {
   github:     { sizes: { s: [3, 1], m: [3, 2], l: [5, 3] }, home: [10, 1, "m"] },
   crypto:     { sizes: { s: [3, 1], m: [3, 2], l: [5, 2] }, home: [10, 3, "m"] },
   screentime: { sizes: { s: [3, 1], m: [3, 2], l: [3, 3] }, home: [10, 5, "m"] },
+  // No S preset: below ~80x20 the Pop!_OS fastfetch block clips and a shell
+  // stops being usable, so the terminal offers only sizes it can honour. It
+  // also starts in the tray — the default board is full, and a widget nobody
+  // has placed should not be spawning a login shell.
+  terminal:   { sizes: { m: [6, 3], l: [12, 6] }, home: [1, 1, "m"], defaultHidden: true },
 };
 
 let layout = loadLayout();
@@ -1684,6 +1690,7 @@ function applyLayout() {
   renderScreentime();
   renderMusic();
   renderCalendar();
+  syncTerminal();
 }
 
 function showWidget(id) {
@@ -1868,6 +1875,7 @@ function applyTheme(name) {
     b.classList.toggle("active", b.dataset.theme === name);
   }
   redrawGauges();
+  applyTerminalTheme(name);
 }
 
 function initThemePicker() {
@@ -2469,6 +2477,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   initWallpaperMenu();
   initWindowHandles();
   initWindowStateSaver();
+  // Before initLayout(): its applyLayout() calls syncTerminal(), which starts
+  // the shell if the terminal is on the board.
+  initTerminal();
   initLayout();
   initGauges();
   initPinToggle();

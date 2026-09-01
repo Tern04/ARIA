@@ -15,15 +15,50 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 | CRYPTO | BTC/ETH price, change + sparkline over 1D / 1M / 1Y | CoinGecko (free, no key) |
 | NOW PLAYING | Track info, transport controls, playlist shuffle chips | Apple Music (macOS), SMTC (Windows), MPRIS (Linux) |
 | SCREEN TIME | Daily total + top apps by foreground time | Local tracking, idle-aware |
+| TERMINAL | A real shell on a real PTY — `sudo`, `apt`, `vim`, `htop`, job control | `portable-pty` (Unix `openpty` / Windows ConPTY) + [xterm.js](https://xtermjs.org) |
 | DISCORD | Voice channels across one or more servers, sorted by how much your group actually uses them (person-minutes tracked locally), who's in them (mute/deafen/streaming), plus online status and current game/song of picked friends | Discord Gateway, own bot token |
 
 ## The board
 
-- 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
+- 12×6 grid; every widget has S/M/L size presets and adapts its content to the size. (TERMINAL has only M and L — see below.)
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
 - Five themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Terminal** (phosphor green).
 - On macOS and Windows the HUD is click-through so it never steals input: hold **⌥ Option** / **Alt** to interact with it (buttons, chips, edit mode). On **Linux** there is no gate — the HUD is always interactive, so the hint isn't shown. The pin button flips it above all windows temporarily.
 - **Wallpaper** (display menu → *Wallpaper…*): pick any image or video as the HUD's backdrop, with fit, dim and blur. On Linux the default is your real desktop wallpaper (the window has to be opaque there — see the WebKitGTK note below); elsewhere the default is none, and setting one makes the window opaque behind the glass. Video is muted and looping, and pauses while the window is hidden.
+
+## Terminal
+
+Your login shell (`$SHELL -l`, PowerShell on Windows) on a genuine PTY, so it is
+a terminal and not a command runner: password prompts, `apt` progress bars,
+Ctrl-C, job control and `SIGWINCH` reflow all work. It starts in the tray —
+drag it onto the board and the shell spawns; it is never started for a widget
+you have not placed. The ⟳ in the widget's header (or `Ctrl+Shift+R`) throws the
+current shell away and starts a clean one — back in your home directory, blank
+screen, rc file and its fastfetch run again.
+
+Your shell config comes along unchanged, fastfetch/neofetch ASCII art included.
+Two things to know:
+
+- `$TERM` is `xterm-256color`, not `xterm-kitty`. Truecolor and 256 colours
+  work; kitty's **graphics protocol** does not, so a fastfetch image logo needs
+  `--logo-type ascii`. `$ARIA_TERM` is set to `1` if you want to branch on it in
+  your rc.
+- **M is 74×17 cells** in the default window and 115×26 on a 1080p fullscreen
+  board; **L** is 155×39 and 237×56. There is no S preset: the Pop!\_OS
+  fastfetch block wants ~80×20 and anything smaller just clips.
+
+| Key | Does |
+|---|---|
+| `Ctrl+Shift+C` / `V` | copy / paste (bare `Ctrl+C` is SIGINT), `Cmd+C` / `V` on macOS |
+| `Ctrl+Shift+` `+` / `-` / `0` | font size up / down / reset |
+| `Ctrl+Shift+R` | throw the shell away and start a clean one (`Cmd+R` on macOS) |
+| `Enter` after the shell exits | start a new one |
+
+xterm.js and its fit addon are committed under `src/vendor/` (no bundler, and
+`script-src` is `'self'`) — see the README there for how to update them. They
+also cost the CSP one directive: xterm creates `<style>` elements at runtime,
+which `style-src 'self'` blocks, so `style-src` carries `'unsafe-inline'`.
+`script-src` is untouched.
 
 ## Accounts & secrets
 
@@ -155,7 +190,7 @@ No setup; CoinGecko's free API.
 | `discord.json` | app config dir¹ | server IDs + friends list (managed by the widget, hand-editable) |
 | `discord-popularity.json` | app data dir¹ | per-channel person-minute tallies |
 | `screentime/` | app data dir¹ | daily usage JSONs |
-| layout / theme | `localStorage` | board arrangement, chosen theme |
+| layout / theme | `localStorage` | board arrangement, chosen theme, terminal font size |
 
 ¹ macOS: `~/Library/Application Support/com.aria.desktop/` — Windows/Linux use the platform-standard config/data dirs.
 

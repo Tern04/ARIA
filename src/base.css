@@ -289,6 +289,77 @@ body.editing .win-resize {
   justify-content: center;
 }
 
+/* ── terminal widget ────────────────────────────────────────
+   xterm.js paints its own rows; all this does is give it the whole
+   widget body and stop it fighting the panel's glass. The terminal's
+   own background is transparent (see lib/terminal.js) so the panel
+   and the wallpaper behind it show through, like every other widget. */
+
+.term-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.term-host .xterm,
+.term-host .xterm-viewport,
+.term-host .xterm-screen {
+  height: 100%;
+  width: 100%;
+}
+
+.term-host .xterm-viewport {
+  background-color: transparent !important;
+  /* xterm's viewport scrollbar is a bright OS bar over dark glass */
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong, rgba(255, 255, 255, 0.16)) transparent;
+}
+
+.term-host .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+
+.term-host .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border-strong, rgba(255, 255, 255, 0.16));
+  border-radius: 3px;
+}
+
+.term-host .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* The widget body is a flex column with a gap; the terminal wants every
+   pixel of it. */
+.widget--terminal .widget-body {
+  gap: 0;
+}
+
+/* Restart lives in the label row, not the edit-mode control cluster: wanting a
+   clean shell is a normal thing to do mid-session, not a layout change.
+   `body.editing .widget > :not(.w-controls)` already makes it inert while
+   widgets are being arranged, so it can't swallow a drag. */
+.term-restart {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint, rgba(255, 255, 255, 0.4));
+  cursor: pointer;
+  transition: color 0.2s;
+}
+
+.term-restart svg {
+  width: 13px;
+  height: 13px;
+}
+
+.term-restart:hover {
+  color: var(--accent, var(--color-accent, #e8ac53));
+}
+
 /* ── customizable widget board ──────────────────────────────
    Shared across themes: a 12×6 cell grid; main.js assigns each
    widget a grid-area from its saved position + size preset. */

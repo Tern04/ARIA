@@ -25,6 +25,9 @@ tauri-plugin-dialog = "2"
 # 4, currentTime frozen at 0); it works over HTTP with byte ranges, which is
 # also the only way to play a large file without buffering it in memory.
 tiny_http = "0.12"
+# Real PTYs for the TERMINAL widget (Unix openpty / Windows ConPTY). A pipe
+# would not do: sudo, apt and every TUI need a controlling terminal.
+portable-pty = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.36"

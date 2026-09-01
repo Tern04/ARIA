@@ -1,4 +1,5 @@
 mod collectors;
+mod terminal;
 mod wallpaper;
 mod window;
 
@@ -41,6 +42,7 @@ pub fn run() {
             // The asset-protocol scope is runtime state, so the saved
             // wallpaper has to be re-granted on every launch.
             wallpaper::init(app.handle());
+            terminal::init(app.handle());
             collectors::spawn_all(app.handle());
             Ok(())
         })
@@ -51,6 +53,10 @@ pub fn run() {
             wallpaper::wallpaper_config,
             wallpaper::wallpaper_set,
             wallpaper::wallpaper_media_url,
+            terminal::term_open,
+            terminal::term_write,
+            terminal::term_resize,
+            terminal::term_close,
             collectors::frontend_ready,
             collectors::music::music_control,
             collectors::music::music_playlists,
