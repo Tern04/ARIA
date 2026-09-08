@@ -2,6 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { WIDGETS, defaultLayout } from "../src/lib/widgets.js";
 import { GRID_COLS, GRID_ROWS, normalizeLayout, overlaps, rectOf } from "../src/lib/layout.js";
+import {
+  BUILTIN_PRESETS,
+  MAX_PRESETS,
+  applyBuiltins,
+  boardToLayout,
+  sanitizeBoard,
+} from "../src/lib/presets.js";
 
 const entries = Object.entries(WIDGETS);
 
@@ -66,4 +73,64 @@ test("the default board fills the grid exactly", () => {
       return n + r.w * r.h;
     }, 0);
   assert.equal(used, GRID_COLS * GRID_ROWS, "the default board should leave no empty cells");
+});
+
+test("the built-in presets are boards, not arbitrary coordinates", () => {
+  for (const preset of BUILTIN_PRESETS) {
+    const board = sanitizeBoard(preset.board, WIDGETS);
+    assert.equal(
+      Object.keys(board).length,
+      Object.keys(preset.board).length,
+      `${preset.name} names a widget or size that does not exist`,
+    );
+    assert.deepEqual(
+      Object.keys(WIDGETS).filter((id) => !(id in board)),
+      [],
+      `${preset.name} omits a widget, which would reappear at its home cell`,
+    );
+    // Applying it must be a no-op for normalizeLayout: if the board needed
+    // fixing, the preset would not restore the arrangement it promises.
+    const layout = boardToLayout(board, defaultLayout());
+    assert.equal(normalizeLayout(layout, WIDGETS), false, `${preset.name} does not lay out cleanly`);
+  }
+});
+
+test("a shipped preset is seeded once per version, and a deleted one stays gone", () => {
+  const [{ name, version }] = BUILTIN_PRESETS;
+  const first = applyBuiltins([], null, WIDGETS);
+  assert.deepEqual(
+    first.presets.map((p) => p.name),
+    [name],
+  );
+  assert.equal(first.seeded[name], version);
+
+  // Deleted at the version it was seeded at: it must not come back.
+  const afterDelete = applyBuiltins([], JSON.stringify(first.seeded), WIDGETS);
+  assert.deepEqual(afterDelete.presets, []);
+
+  // A revision does come back, replacing the stale copy rather than doubling it.
+  const stale = [{ name, board: { gpu: { c: 1, r: 1, size: "s", hidden: false } } }];
+  const revised = applyBuiltins(stale, JSON.stringify({ [name]: version - 1 }), WIDGETS);
+  assert.equal(revised.presets.length, 1);
+  assert.equal(revised.presets[0].board.gpu.size, BUILTIN_PRESETS[0].board.gpu.size);
+});
+
+test("seeding never evicts a preset the user saved", () => {
+  const mine = Array.from({ length: MAX_PRESETS }, (_, i) => ({
+    name: `mine ${i}`,
+    board: { gpu: { c: 1, r: 1, size: "m", hidden: false } },
+  }));
+  const out = applyBuiltins(mine, null, WIDGETS);
+  assert.deepEqual(
+    out.presets.map((p) => p.name),
+    mine.map((p) => p.name),
+    "a full list is left alone",
+  );
+  assert.deepEqual(out.seeded, {}, "and is not recorded as seeded, so it can land later");
+});
+
+test("a legacy seeded flag does not block the current version", () => {
+  // The first version of the seeder wrote the string "1", not a version map.
+  const out = applyBuiltins([], "1", WIDGETS);
+  assert.equal(out.presets.length, BUILTIN_PRESETS.length);
 });

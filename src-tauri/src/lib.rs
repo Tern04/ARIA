@@ -58,6 +58,7 @@ pub fn run() {
             terminal::term_resize,
             terminal::term_close,
             collectors::frontend_ready,
+            collectors::latency::latency_set_host,
             collectors::music::music_control,
             collectors::music::music_playlists,
             collectors::music::music_play_playlist,

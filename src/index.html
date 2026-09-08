@@ -193,6 +193,113 @@
           </div>
         </section>
 
+        <!-- Telemetry pack: four widgets that only make sense together, all
+             fed by the hardware/gpu/latency collectors. Their skeletons are
+             static and JS updates values in place — they refresh every two
+             seconds, and rebuilding the subtree that often makes the panels
+             flicker. -->
+        <section class="widget widget--gpu" id="widget-gpu">
+          <h2 class="widget-label">GPU</h2>
+          <div class="widget-body">
+            <div class="tele-head">
+              <span class="tele-name" id="gpu-name">detecting…</span>
+              <span class="tele-big"><span id="gpu-load">--</span><span class="unit">%</span></span>
+            </div>
+            <div class="meter-row">
+              <span class="meter-label">LOAD</span>
+              <div class="meter"><i class="meter-fill" id="gpu-load-fill"></i></div>
+              <span class="meter-value" id="gpu-load-val">--</span>
+            </div>
+            <div class="meter-row">
+              <span class="meter-label">VRAM</span>
+              <div class="meter"><i class="meter-fill" id="gpu-vram-fill"></i></div>
+              <span class="meter-value" id="gpu-vram-val">--</span>
+            </div>
+            <svg class="gpu-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <div class="stat-grid" id="gpu-stats">
+              <span class="stat"><b class="stat-key">TEMP</b><b class="stat-val" id="gpu-temp">--</b></span>
+              <span class="stat"><b class="stat-key">POWER</b><b class="stat-val" id="gpu-power">--</b></span>
+              <span class="stat"><b class="stat-key">CORE</b><b class="stat-val" id="gpu-clock">--</b></span>
+              <span class="stat"><b class="stat-key">MEM</b><b class="stat-val" id="gpu-memclock">--</b></span>
+              <span class="stat"><b class="stat-key">FAN</b><b class="stat-val" id="gpu-fan">--</b></span>
+            </div>
+            <span class="disconnected" id="gpu-note" hidden>no GPU telemetry</span>
+          </div>
+        </section>
+
+        <section class="widget widget--thermals" id="widget-thermals">
+          <h2 class="widget-label">THERMALS</h2>
+          <div class="widget-body" id="th-body">
+            <div class="th-row" data-sensor="cpu">
+              <span class="th-name">CPU</span>
+              <div class="meter"><i class="meter-fill"></i></div>
+              <span class="th-val">--</span>
+            </div>
+            <div class="th-row" data-sensor="gpu">
+              <span class="th-name">GPU</span>
+              <div class="meter"><i class="meter-fill"></i></div>
+              <span class="th-val">--</span>
+            </div>
+            <div class="th-row" data-sensor="drive">
+              <span class="th-name">SSD</span>
+              <div class="meter"><i class="meter-fill"></i></div>
+              <span class="th-val">--</span>
+            </div>
+            <div class="th-strip">
+              <span class="hw-cell" id="th-fan">FAN --</span>
+              <span class="hw-cell" id="th-clock">CLK --</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="widget widget--perf" id="widget-perf">
+          <h2 class="widget-label">PERF</h2>
+          <div class="widget-body" id="pf-body">
+            <div class="pf-row" data-series="cpu">
+              <span class="pf-name">CPU</span>
+              <svg class="pf-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <span class="pf-val">--</span>
+            </div>
+            <div class="pf-row" data-series="gpu">
+              <span class="pf-name">GPU</span>
+              <svg class="pf-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <span class="pf-val">--</span>
+            </div>
+            <div class="pf-row" data-series="ram">
+              <span class="pf-name">RAM</span>
+              <svg class="pf-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <span class="pf-val">--</span>
+            </div>
+            <div class="pf-row" data-series="vram">
+              <span class="pf-name">VRAM</span>
+              <svg class="pf-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+              <span class="pf-val">--</span>
+            </div>
+            <span class="pf-window" id="pf-window">last 3 min</span>
+          </div>
+        </section>
+
+        <section class="widget widget--latency" id="widget-latency">
+          <h2 class="widget-label">PING</h2>
+          <div class="widget-body">
+            <div class="tele-head">
+              <span class="tele-name" id="pg-host">1.1.1.1</span>
+              <span class="tele-big"><span id="pg-ms">--</span><span class="unit">ms</span></span>
+            </div>
+            <svg class="pg-spark" viewBox="0 0 100 24" preserveAspectRatio="none" aria-hidden="true"></svg>
+            <div class="hw-strip">
+              <span class="hw-cell" id="pg-avg">avg --</span>
+              <span class="hw-cell" id="pg-jitter">jit --</span>
+              <span class="hw-cell" id="pg-loss">loss --</span>
+            </div>
+            <form class="pg-form" id="pg-form">
+              <input id="pg-input" class="pg-input" type="text" spellcheck="false"
+                     autocomplete="off" aria-label="Host to ping" placeholder="host to ping" />
+              <button class="pg-set" type="submit">SET</button>
+            </form>
+          </div>
+        </section>
+
         <section class="widget widget--github" id="widget-github">
           <h2 class="widget-label">GITHUB</h2>
           <div class="widget-body">

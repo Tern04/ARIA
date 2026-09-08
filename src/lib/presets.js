@@ -9,6 +9,78 @@
 export const MAX_PRESETS = 8;
 export const MAX_NAME = 24;
 
+/**
+ * Presets shipped with the app, seeded into a board that has not had them.
+ * The telemetry widgets are hidden by default — a loadout is only useful if it
+ * is one click away, and hunting four chips out of the tray and sizing each by
+ * hand is not that.
+ *
+ * "Gaming" gives the top half of the board to GPU and the history graph, and
+ * the middle band to the four things worth a whole tile mid-session: thermals,
+ * the CPU gauges, the player and voice chat. Ping and the notification strip
+ * run along the bottom as one-line headlines. Every widget is listed, hidden
+ * ones included, so nothing reappears at its home cell and displaces the
+ * arrangement.
+ *
+ * `version` is what lets a shipped preset be revised: it is seeded again when
+ * its version has moved on, and never otherwise — so a preset deleted at the
+ * version it was seeded at stays deleted.
+ */
+export const BUILTIN_PRESETS = [
+  {
+    name: "Gaming",
+    version: 2,
+    board: {
+      gpu:        { c: 1, r: 1, size: "l", hidden: false },
+      perf:       { c: 7, r: 1, size: "l", hidden: false },
+      thermals:   { c: 1, r: 4, size: "m", hidden: false },
+      hardware:   { c: 4, r: 4, size: "m", hidden: false },
+      music:      { c: 7, r: 4, size: "m", hidden: false },
+      discord:    { c: 10, r: 4, size: "m", hidden: false },
+      latency:    { c: 1, r: 6, size: "s", hidden: false },
+      crypto:     { c: 4, r: 6, size: "s", hidden: false },
+      email:      { c: 7, r: 6, size: "s", hidden: false },
+      github:     { c: 10, r: 6, size: "s", hidden: false },
+      // The board is full at 72 cells, so the four M tiles cost the screen-time
+      // headline: it is the one that reports on the session rather than to it.
+      screentime: { c: 1, r: 1, size: "s", hidden: true },
+      stag:       { c: 1, r: 1, size: "m", hidden: true },
+      terminal:   { c: 7, r: 1, size: "m", hidden: true },
+      calendar:   { c: 1, r: 1, size: "m", hidden: true },
+    },
+  },
+];
+
+/**
+ * Fold the shipped presets into the stored list. `seededRaw` is the stored
+ * record of what has already been seeded, as a name → version map; the return
+ * carries the updated record so the caller can persist it.
+ *
+ * A shipped preset is added when its version has not been seeded yet, and
+ * replaces a same-named one — that is how a revision reaches a board that
+ * already has the old copy. It is never added over a full list: the user's own
+ * arrangements outrank ours, and `withPreset` would evict the oldest.
+ */
+export function applyBuiltins(presets, seededRaw, widgets) {
+  let seeded = {};
+  try {
+    const parsed = JSON.parse(seededRaw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) seeded = parsed;
+  } catch {}
+  let next = presets;
+  const record = { ...seeded };
+  for (const builtin of BUILTIN_PRESETS) {
+    const name = normalizeName(builtin.name);
+    if (record[name] === builtin.version) continue;
+    const replacing = next.some((p) => p.name === name);
+    // Not recorded as seeded, so it lands the day a slot frees up.
+    if (!replacing && next.length >= MAX_PRESETS) continue;
+    next = withPreset(next, name, builtin.board, widgets);
+    record[name] = builtin.version;
+  }
+  return { presets: next, seeded: record };
+}
+
 /** Trim a user-typed name to something storable; "" when nothing is left. */
 export function normalizeName(raw) {
   return String(raw ?? "")

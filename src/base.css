@@ -712,6 +712,354 @@ body.editing .win-resize {
   display: none;
 }
 
+/* ── telemetry widgets (GPU / THERMALS / PERF / PING) ───────
+   The gaming loadout. Structural only, like the rest of base.css: the
+   four widgets pull their colours from whichever theme is loaded through
+   one local alias each, with a fallback chain because the Jarvis theme
+   names its variables --color-* while the others use the short names. */
+
+.widget--gpu,
+.widget--thermals,
+.widget--perf,
+.widget--latency {
+  --tele-accent: var(--accent, var(--color-accent, #e8ac53));
+  --tele-warn: var(--warn, var(--color-warn, #e0a33c));
+  --tele-alert: var(--alert, #e5533d);
+  --tele-good: var(--good, var(--color-accent, #6bc39a));
+  --tele-dim: var(--text-dim, var(--color-text-dim, #979ba4));
+  --tele-track: var(--bg-inset, rgba(128, 128, 128, 0.14));
+  --tele-line: var(--border, rgba(128, 128, 128, 0.25));
+  --tele-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+/* headline row: what it is on the left, the one number on the right */
+.tele-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.tele-name {
+  font: 500 0.66rem/1.2 var(--tele-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tele-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tele-big {
+  font: 600 1.6rem/1 var(--tele-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tele-big .unit {
+  font-size: 0.5em;
+  opacity: 0.6;
+  margin-left: 2px;
+}
+
+.widget[data-size="l"] .tele-big {
+  font-size: 2.1rem;
+}
+
+/* bar + label + readout, shared by the GPU meters and the thermal rows */
+.meter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font: 500 0.64rem/1.2 var(--tele-mono);
+  letter-spacing: 0.08em;
+  color: var(--tele-dim);
+}
+
+.meter-label {
+  width: 3.2em;
+}
+
+.meter {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--tele-track);
+  overflow: hidden;
+}
+
+.meter-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 3px;
+  background: var(--tele-accent);
+  transition: width 0.45s ease, background-color 0.45s ease;
+}
+
+.meter-value {
+  min-width: 4.2em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .meter-fill {
+    transition: none;
+  }
+}
+
+/* GPU secondary readings: whatever fits, two columns or four */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(58px, 1fr));
+  gap: 4px 10px;
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--tele-line);
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.stat-key {
+  font: 500 0.56rem/1.2 var(--tele-mono);
+  letter-spacing: 0.1em;
+  color: var(--tele-dim);
+  opacity: 0.85;
+}
+
+.stat-val {
+  font: 600 0.78rem/1.2 var(--tele-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.stat-val.is-warm {
+  color: var(--tele-warn);
+}
+
+.stat-val.is-hot {
+  color: var(--tele-alert);
+}
+
+/* THERMALS: one row per sensor, the bar spanning 30–100 °C */
+.th-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.th-name {
+  width: 3.2em;
+  font: 500 0.64rem/1.2 var(--tele-mono);
+  letter-spacing: 0.08em;
+  color: var(--tele-dim);
+}
+
+.th-row .meter {
+  height: 8px;
+}
+
+.th-val {
+  min-width: 3.8em;
+  text-align: right;
+  font: 600 0.82rem/1.2 var(--tele-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.th-row.is-warm .meter-fill { background: var(--tele-warn); }
+.th-row.is-warm .th-val { color: var(--tele-warn); }
+.th-row.is-hot .meter-fill { background: var(--tele-alert); }
+.th-row.is-hot .th-val { color: var(--tele-alert); }
+
+/* A sensor the machine does not publish: dimmed, not zeroed. */
+.th-row.is-absent {
+  opacity: 0.45;
+}
+
+.th-strip {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--tele-line);
+  font: 500 0.66rem/1.4 var(--tele-mono);
+  color: var(--tele-dim);
+}
+
+/* PERF: four traces over the same three minutes, one colour each so a
+   glance tells which line is which without reading the labels. */
+.pf-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.pf-row[data-series="cpu"] { color: var(--tele-accent); }
+.pf-row[data-series="gpu"] { color: var(--tele-good); }
+.pf-row[data-series="ram"] { color: var(--tele-dim); }
+.pf-row[data-series="vram"] { color: var(--tele-warn); }
+
+.pf-name {
+  width: 3.2em;
+  flex-shrink: 0;
+  font: 500 0.62rem/1.2 var(--tele-mono);
+  letter-spacing: 0.08em;
+  color: var(--tele-dim);
+}
+
+.pf-spark,
+.pg-spark {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: visible;
+}
+
+.pf-val {
+  min-width: 5em;
+  flex-shrink: 0;
+  text-align: right;
+  font: 600 0.72rem/1.2 var(--tele-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.pf-window {
+  flex-shrink: 0;
+  text-align: right;
+  font: 500 0.56rem/1.2 var(--tele-mono);
+  letter-spacing: 0.08em;
+  color: var(--tele-dim);
+  opacity: 0.6;
+}
+
+/* PING: the trace and the headline both carry the state, so a bad ping is
+   visible from across the room without reading the number. */
+.pg-spark {
+  color: var(--tele-accent);
+  flex: 1 1 auto;
+  max-height: 60px;
+}
+
+.widget--latency.is-warm .pg-spark,
+.widget--latency.is-warm .tele-big {
+  color: var(--tele-warn);
+}
+
+.widget--latency.is-hot .pg-spark,
+.widget--latency.is-hot .tele-big {
+  color: var(--tele-alert);
+}
+
+.pg-form {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.pg-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 7px;
+  border: 1px solid var(--tele-line);
+  border-radius: 4px;
+  background: var(--tele-track);
+  color: inherit;
+  font: 500 0.68rem/1.4 var(--tele-mono);
+}
+
+.pg-input:focus {
+  outline: none;
+  border-color: var(--tele-accent);
+}
+
+/* A host the collector refused (it would have become a ping flag). */
+.pg-input.is-bad {
+  border-color: var(--tele-alert);
+}
+
+.pg-set {
+  flex-shrink: 0;
+  padding: 3px 9px;
+  border: 1px solid var(--tele-line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--tele-dim);
+  font: 500 0.62rem/1.4 var(--tele-mono);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.pg-set:hover {
+  color: var(--tele-accent);
+  border-color: var(--tele-accent);
+}
+
+/* One-row sizes keep the headline and drop everything that needs height. */
+.widget--gpu[data-size="s"] .meter-row,
+.widget--gpu[data-size="s"] .stat-grid .stat:nth-child(n + 3),
+.widget--thermals[data-size="s"] .th-strip,
+.widget--perf[data-size="s"] .pf-row[data-series="ram"],
+.widget--perf[data-size="s"] .pf-row[data-series="vram"],
+.widget--perf[data-size="s"] .pf-window,
+.widget--latency[data-size="s"] .pg-form,
+.widget--latency[data-size="s"] .pg-spark {
+  display: none;
+}
+
+.widget--gpu[data-size="s"] .stat-grid {
+  padding-top: 0;
+  border-top: none;
+}
+
+/* At L the head, meters and readings leave two thirds of the panel empty, so
+   the large size fills it with the load curve — the thing a GPU panel in a
+   gaming HUD is actually for. Smaller sizes have no room and drop it. */
+.gpu-spark {
+  display: none;
+  color: var(--tele-accent);
+}
+
+.widget--gpu[data-size="l"] .gpu-spark {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.widget--gpu[data-size="l"] .meter {
+  height: 10px;
+}
+
+/* Readings sit at the foot of the panel at every size, so the meters keep
+   the top and the slack lands in one place instead of trailing off the end. */
+.widget--gpu .stat-grid {
+  margin-top: auto;
+}
+
+.widget--gpu[data-size="l"] .stat-val {
+  font-size: 0.95rem;
+}
+
+/* Medium GPU: the meters and the top four readings, no fan row. */
+.widget--gpu[data-size="m"] .stat:nth-child(n + 5) {
+  display: none;
+}
+
 /* ── CRYPTO widget ──────────────────────────────────────────
    Each coin block shares the body height equally and its sparkline
    absorbs the block's slack, so charts grow with the widget. */

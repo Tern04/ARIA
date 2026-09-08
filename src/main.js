@@ -1,8 +1,10 @@
 import { drawGauge } from "./gauge.js";
 import { progressAt } from "./lib/music.js";
+import { HISTORY_LEN, autoScale, latest, peak, pushSample, seriesPaths } from "./lib/history.js";
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import { WIDGETS, defaultLayout } from "./lib/widgets.js";
 import {
+  applyBuiltins,
   boardToLayout,
   matchingPreset,
   normalizeName,
@@ -1161,6 +1163,277 @@ function renderMusic() {
   updateMusicProgress();
 }
 
+// ── telemetry widgets: GPU / THERMALS / PERF / PING ─────────
+// The four gaming-loadout widgets. They share one payload cache and one
+// history, because they read the same three collectors on the same beat: the
+// GPU widget's temperature and the THERMALS row are the same reading, and
+// splitting them would let the two disagree by a tick.
+
+let hwData = null;
+let gpuData = null;
+let latencyData = null;
+// When each payload last arrived. A collector that stops answering (nvidia-smi
+// missing, so the GPU loop backs off for two minutes) must leave a gap in the
+// graph, not a flat line at its last value — which would read as a genuine
+// steady load.
+let hwAt = 0;
+let gpuAt = 0;
+const STALE_MS = 8000;
+
+const HISTORY = { cpu: [], gpu: [], ram: [], vram: [] };
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const SPARK_W = 100;
+const SPARK_H = 24;
+
+// Temperatures are shown against what the part is happy at, not a raw scale:
+// [warm, hot] in °C. Drives run much cooler than silicon, hence their own band.
+const TEMP_BANDS = { cpu: [70, 85], gpu: [72, 86], drive: [55, 70] };
+// A bar from 0 °C would sit two-thirds full at idle and barely move, so the
+// meters span the range a running machine actually occupies.
+const TEMP_FLOOR = 30;
+const TEMP_CEIL = 100;
+
+function tempClass(kind, t) {
+  const [warm, hot] = TEMP_BANDS[kind];
+  if (t >= hot) return "is-hot";
+  if (t >= warm) return "is-warm";
+  return "";
+}
+
+/** °C as a fraction of the meter, clamped to the band it can usefully show. */
+function tempPct(t) {
+  return Math.max(0, Math.min(100, ((t - TEMP_FLOOR) / (TEMP_CEIL - TEMP_FLOOR)) * 100));
+}
+
+const dash = "—";
+const orDash = (v, fmt) => (v === null || v === undefined ? dash : fmt(v));
+
+/**
+ * Repaint a sparkline in place: one polyline per unbroken run of readings,
+ * each optionally over a filled area dropped to the baseline. The fill is what
+ * makes a trace read as a load at a glance rather than as a squiggle — but it
+ * is drawn per run, so a gap stays a gap instead of being floored to zero.
+ */
+function drawSpark(svg, values, opts = {}) {
+  const { fill = false, ...geom } = opts;
+  const runs = seriesPaths(values, { width: SPARK_W, height: SPARK_H, ...geom });
+  const shapes = [];
+  for (const points of runs) {
+    if (fill) {
+      const xs = points.split(" ").map((pt) => pt.split(",")[0]);
+      const area = document.createElementNS(SVG_NS, "polygon");
+      area.setAttribute("points", `${points} ${xs[xs.length - 1]},${SPARK_H} ${xs[0]},${SPARK_H}`);
+      area.setAttribute("fill", "currentColor");
+      area.setAttribute("opacity", "0.16");
+      shapes.push(area);
+    }
+    const line = document.createElementNS(SVG_NS, "polyline");
+    line.setAttribute("points", points);
+    line.setAttribute("fill", "none");
+    line.setAttribute("stroke", "currentColor");
+    line.setAttribute("stroke-width", "1.5");
+    line.setAttribute("vector-effect", "non-scaling-stroke");
+    shapes.push(line);
+  }
+  svg.replaceChildren(...shapes);
+}
+
+function setMeter(el, pct) {
+  el.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+}
+
+function renderGpu() {
+  const body = document.getElementById("widget-gpu").querySelector(".widget-body");
+  const note = document.getElementById("gpu-note");
+  if (!gpuData) {
+    // Kept as "waiting" until the collector has had a chance to answer;
+    // initTelemetry decides when silence means "this machine has no telemetry".
+    return;
+  }
+  note.hidden = true;
+  body.classList.remove("is-empty");
+  const d = gpuData;
+
+  document.getElementById("gpu-name").textContent = d.name ?? "GPU";
+  document.getElementById("gpu-load").textContent = Math.round(d.gpu);
+  setMeter(document.getElementById("gpu-load-fill"), d.gpu);
+  document.getElementById("gpu-load-val").textContent = `${Math.round(d.gpu)}%`;
+
+  const vram = document.getElementById("gpu-vram-fill");
+  const vramVal = document.getElementById("gpu-vram-val");
+  if (d.vram_total_mb) {
+    const used = d.vram_used_mb ?? 0;
+    setMeter(vram, (used / d.vram_total_mb) * 100);
+    // GB, because a card's VRAM is sold in GB and 5.9/6 reads faster than
+    // 6041/6144 mid-match.
+    vramVal.textContent = `${(used / 1024).toFixed(1)}/${Math.round(d.vram_total_mb / 1024)}G`;
+  } else {
+    setMeter(vram, 0);
+    vramVal.textContent = dash;
+  }
+
+  const temp = document.getElementById("gpu-temp");
+  temp.textContent = orDash(d.temp_c, (v) => `${Math.round(v)}°`);
+  temp.className = `stat-val ${d.temp_c === null ? "" : tempClass("gpu", d.temp_c)}`;
+  document.getElementById("gpu-power").textContent = orDash(d.power_w, (v) =>
+    d.power_limit_w ? `${Math.round(v)}/${Math.round(d.power_limit_w)}W` : `${Math.round(v)}W`,
+  );
+  document.getElementById("gpu-clock").textContent = orDash(d.clock_mhz, (v) => `${v}MHz`);
+  document.getElementById("gpu-memclock").textContent = orDash(d.mem_clock_mhz, (v) => `${v}MHz`);
+  document.getElementById("gpu-fan").textContent = orDash(d.fan_pct, (v) => `${Math.round(v)}%`);
+  renderGpuSpark();
+}
+
+/** The large GPU panel's load curve. Shares the graph widget's history, so the
+ *  two never disagree about what the GPU was doing a minute ago. */
+function renderGpuSpark() {
+  drawSpark(document.querySelector(".gpu-spark"), HISTORY.gpu, {
+    min: 0,
+    max: 100,
+    len: HISTORY_LEN,
+    fill: true,
+  });
+}
+
+function renderThermals() {
+  const rows = {
+    cpu: hwData?.cpu_temp ?? null,
+    gpu: gpuData?.temp_c ?? null,
+    drive: hwData?.drive_temp ?? null,
+  };
+  for (const [kind, t] of Object.entries(rows)) {
+    const row = document.querySelector(`.th-row[data-sensor="${kind}"]`);
+    const fill = row.querySelector(".meter-fill");
+    const val = row.querySelector(".th-val");
+    if (t === null) {
+      // No sensor is not 0 °C: say so, and leave the bar empty.
+      row.className = "th-row is-absent";
+      setMeter(fill, 0);
+      val.textContent = dash;
+      continue;
+    }
+    row.className = `th-row ${tempClass(kind, t)}`;
+    setMeter(fill, tempPct(t));
+    val.textContent = `${Math.round(t)}°C`;
+  }
+  document.getElementById("th-fan").textContent =
+    `FAN ${orDash(gpuData?.fan_pct ?? null, (v) => `${Math.round(v)}%`)}`;
+  document.getElementById("th-clock").textContent =
+    `CLK ${hwData?.cpu_freq_mhz ? `${(hwData.cpu_freq_mhz / 1000).toFixed(1)} GHz` : dash}`;
+}
+
+const PERF_LABEL = {
+  cpu: (v) => `${Math.round(v)}%`,
+  gpu: (v) => `${Math.round(v)}%`,
+  ram: (v) => `${Math.round(v)}%`,
+  vram: (v) => `${Math.round(v)}%`,
+};
+
+function renderPerf() {
+  for (const row of document.querySelectorAll("#pf-body .pf-row")) {
+    const key = row.dataset.series;
+    const values = HISTORY[key];
+    drawSpark(row.querySelector(".pf-spark"), values, {
+      min: 0,
+      max: 100,
+      len: HISTORY_LEN,
+      fill: true,
+    });
+    const now = latest(values);
+    const high = peak(values);
+    row.querySelector(".pf-val").textContent =
+      now === null ? dash : `${PERF_LABEL[key](now)}${high === null ? "" : ` ↑${Math.round(high)}`}`;
+  }
+}
+
+function renderLatency() {
+  const widget = document.getElementById("widget-latency");
+  const d = latencyData;
+  if (!d) return;
+  document.getElementById("pg-host").textContent = d.host;
+  const ms = document.getElementById("pg-ms");
+  // A lost packet reads as a dash, and the widget goes red: for a game that is
+  // worse news than a high-but-arriving ping, so it must not look like zero.
+  ms.textContent = d.last_ms === null ? dash : d.last_ms.toFixed(d.last_ms < 10 ? 1 : 0);
+  const hot = d.last_ms === null || d.last_ms >= 100 || d.loss_pct >= 20;
+  widget.classList.toggle("is-hot", hot);
+  widget.classList.toggle("is-warm", !hot && (d.last_ms >= 50 || d.loss_pct > 0));
+  drawSpark(document.querySelector(".pg-spark"), d.samples, {
+    ...autoScale(d.samples),
+    len: d.samples.length > 30 ? d.samples.length : 30,
+    fill: true,
+  });
+  document.getElementById("pg-avg").textContent =
+    `avg ${orDash(d.avg_ms, (v) => `${v.toFixed(v < 10 ? 1 : 0)}ms`)}`;
+  document.getElementById("pg-jitter").textContent =
+    `jit ${orDash(d.jitter_ms, (v) => `${v.toFixed(1)}ms`)}`;
+  document.getElementById("pg-loss").textContent = `loss ${Math.round(d.loss_pct)}%`;
+}
+
+const PING_HOST_KEY = "aria-ping-host";
+
+/**
+ * One clock for the history graph, rather than pushing from each collector's
+ * own event: the CPU and GPU loops tick independently, so appending on arrival
+ * would let the two traces drift apart and mean different times at the same x.
+ */
+function sampleHistory() {
+  const fresh = (at) => Date.now() - at < STALE_MS;
+  const hw = fresh(hwAt) ? hwData : null;
+  const gpu = fresh(gpuAt) ? gpuData : null;
+  pushSample(HISTORY.cpu, hw?.cpu ?? null);
+  pushSample(HISTORY.ram, hw?.ram ?? null);
+  pushSample(HISTORY.gpu, gpu?.gpu ?? null);
+  pushSample(
+    HISTORY.vram,
+    gpu?.vram_total_mb ? ((gpu.vram_used_mb ?? 0) / gpu.vram_total_mb) * 100 : null,
+  );
+  renderPerf();
+  renderGpuSpark();
+}
+
+function initTelemetry() {
+  const form = document.getElementById("pg-form");
+  const input = document.getElementById("pg-input");
+  let host = null;
+  try {
+    host = localStorage.getItem(PING_HOST_KEY);
+  } catch {}
+  if (host) {
+    input.value = host;
+    // The collector starts on its default, so a saved host has to be re-applied
+    // every launch.
+    window.__TAURI__.core.invoke("latency_set_host", { host }).catch((e) => console.error(e));
+  }
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const next = input.value.trim();
+    if (!next) return;
+    try {
+      await window.__TAURI__.core.invoke("latency_set_host", { host: next });
+      localStorage.setItem(PING_HOST_KEY, next);
+      input.classList.remove("is-bad");
+    } catch (err) {
+      console.error("ping host rejected:", err);
+      input.classList.add("is-bad");
+    }
+  });
+
+  sampleHistory();
+  setInterval(sampleHistory, 2000);
+
+  // Silence past this point is an answer: no NVIDIA card, or no driver tool.
+  setTimeout(() => {
+    if (gpuData) return;
+    const note = document.getElementById("gpu-note");
+    note.textContent = "no GPU telemetry on this machine";
+    note.hidden = false;
+    document.getElementById("widget-gpu").querySelector(".widget-body").classList.add("is-empty");
+    document.getElementById("gpu-name").textContent = dash;
+  }, 15000);
+}
+
 async function initCollectors() {
   const { listen } = window.__TAURI__.event;
   const pending = [];
@@ -1168,6 +1441,9 @@ async function initCollectors() {
 
   on("hardware", (e) => {
     const p = e.payload;
+    hwData = p;
+    hwAt = Date.now();
+    renderThermals();
     setGauge("cpu", p.cpu);
     setGauge("ram", p.ram);
     if (p.ram_total_gb > 0) {
@@ -1183,7 +1459,16 @@ async function initCollectors() {
   });
 
   on("gpu", (e) => {
+    gpuData = e.payload;
+    gpuAt = Date.now();
     setGauge("gpu", e.payload.gpu);
+    renderGpu();
+    renderThermals();
+  });
+
+  on("latency", (e) => {
+    latencyData = e.payload;
+    renderLatency();
   });
 
   on("interactive", (e) => {
@@ -1671,6 +1956,10 @@ function applyLayout() {
   renderScreentime();
   renderMusic();
   renderCalendar();
+  renderGpu();
+  renderThermals();
+  renderPerf();
+  renderLatency();
   syncTerminal();
 }
 
@@ -1842,6 +2131,7 @@ function initLayout() {
    in lib/presets.js; this is the menu around it. */
 
 const PRESETS_KEY = "aria-presets";
+const SEEDED_KEY = "aria-presets-seeded";
 let presets = [];
 
 function persistPresets() {
@@ -1859,7 +2149,13 @@ function initPresetMenu() {
   const input = document.getElementById("preset-name");
 
   try {
-    presets = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
+    const stored = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
+    // The shipped presets are seeded per version, so one the user deletes stays
+    // deleted while a revised one still reaches a board that has the old copy.
+    const seeding = applyBuiltins(stored, localStorage.getItem(SEEDED_KEY), WIDGETS);
+    presets = seeding.presets;
+    if (presets !== stored) persistPresets();
+    localStorage.setItem(SEEDED_KEY, JSON.stringify(seeding.seeded));
   } catch {}
 
   const closeNaming = () => {
@@ -2590,6 +2886,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   initGauges();
   initPinToggle();
   initMusicControls();
+  initTelemetry();
   await initCollectors();
   // All listeners are now registered; let gated collectors start emitting.
   window.__TAURI__.core.invoke("frontend_ready");

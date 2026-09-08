@@ -17,14 +17,20 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 | SCREEN TIME | Daily total + top apps by foreground time | Local tracking, idle-aware |
 | TERMINAL | A real shell on a real PTY — `sudo`, `apt`, `vim`, `htop`, job control | `portable-pty` (Unix `openpty` / Windows ConPTY) + [xterm.js](https://xtermjs.org) |
 | DISCORD | Voice channels across one or more servers, sorted by how much your group actually uses them (person-minutes tracked locally), who's in them (mute/deafen/streaming), plus online status and current game/song of picked friends | Discord Gateway, own bot token |
+| GPU | Model, load, VRAM, temperature, power draw against the board limit, core and memory clocks, fan — plus a load curve at L | `nvidia-smi` (Linux); load only on macOS/Windows |
+| THERMALS | CPU / GPU / drive temperatures on colour-banded meters, GPU fan and CPU clock | `sysinfo` components (hwmon / SMC / WMI) + `nvidia-smi` |
+| PERF | CPU, GPU, RAM and VRAM over the last three minutes, current value and peak per trace | The same collectors, sampled on one clock |
+| PING | Round trip to any host, with jitter, packet loss and a 90 s trace | System `ping`, one packet every 3 s |
 
 ## The board
 
 - 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
 - **Every preset is 3, 6 or 12 columns wide** — a third, a half or the whole board — so any mix of widgets tiles without leaving slivers no other widget fits. Heights are free and just stack. S is `[3,1]` (one-line headline), M is `[3,2]` (the standard tile), L is `[6,3]` (double-wide feature). STAG and TERMINAL are the only exceptions, and only on width: a five-day timetable and an 80-column shell do not fit in a third of the board. They share a footprint — `[6,4]` and `[12,4]` — so they sit level beside each other, and an L of either leaves the bottom two rows for a strip of widgets to still glance at.
-- The default board fills all 72 cells exactly, with SCREEN TIME and CALENDAR starting in the tray. `npm test` checks that it still tiles.
+- The default board fills all 72 cells exactly; SCREEN TIME, CALENDAR and the four telemetry widgets (GPU, THERMALS, PERF, PING) start in the tray. `npm test` checks that it still tiles.
+- A **Gaming** preset ships with the app, seeded once into the preset list: GPU and PERF across the top half, THERMALS / SYSTEM / NOW PLAYING / PING under them, the rest as a bottom strip. Delete it and it stays deleted; it is never re-seeded, and it is never added over a full preset list.
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
 - Grid button → **board presets**: name and save the current arrangement, then switch between them in a click. A preset stores only the board (position, size, hidden), so it survives theme and wallpaper changes; a widget added after the preset was saved arrives at its default spot rather than vanishing. Up to 8, kept in `localStorage`; the tick marks the preset the board currently matches exactly.
+- The telemetry widgets colour by state, not by value: temperatures turn amber at 70 °C (55 °C for drives) and red at 85 °C (70 °C), and PING turns amber past 50 ms or any packet loss, red past 100 ms. A sensor the machine does not publish reads as `—` and dims its row — never as 0 °C.
 - Five themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Terminal** (phosphor green).
 - On macOS and Windows the HUD is click-through so it never steals input: hold **⌥ Option** / **Alt** to interact with it (buttons, chips, edit mode). On **Linux** there is no gate — the HUD is always interactive, so the hint isn't shown. The pin button flips it above all windows temporarily.
 - **Wallpaper** (display menu → *Wallpaper…*): pick any image or video as the HUD's backdrop, with fit, dim and blur. On Linux the default is your real desktop wallpaper (the window has to be opaque there — see the WebKitGTK note below); elsewhere the default is none, and setting one makes the window opaque behind the glass. Video is muted and looping, and pauses while the window is hidden.

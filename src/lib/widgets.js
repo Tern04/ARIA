@@ -39,10 +39,16 @@ export const WIDGETS = {
   github:     { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [10, 5, "s"] },
   discord:    { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [7, 6, "s"] },
   crypto:     { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [10, 6, "s"] },
-  // The default board is full, so these two start in the tray; drag them in
-  // (or shrink something) to place them.
+  // The default board is full, so everything below starts in the tray; drag
+  // one in (or shrink something) to place it. The four telemetry widgets are
+  // deliberately not on the default board: they are a gaming loadout, not
+  // everyday chrome, and the "Gaming" preset places all four at once.
   screentime: { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
   calendar:   { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
+  gpu:        { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
+  thermals:   { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
+  perf:       { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
+  latency:    { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
 };
 
 /** A fresh board: every widget at its home cell and size. */

@@ -4,6 +4,7 @@ pub mod discord;
 pub mod email;
 pub mod github;
 mod hardware;
+pub mod latency;
 pub mod music;
 mod screentime;
 pub mod stag;
@@ -202,6 +203,7 @@ pub fn spawn_all(app: &AppHandle) {
     let (tx, rx) = watch::channel(false);
     app.manage(FrontendReady(tx));
     hardware::spawn(app.clone());
+    latency::spawn(app.clone());
     screentime::spawn(app.clone());
     music::spawn(app.clone());
     github::spawn(app.clone(), rx.clone());

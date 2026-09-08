@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::time::Duration;
-use sysinfo::System;
+use sysinfo::{Components, System};
 use tauri::{AppHandle, Emitter};
 
 const POLL: Duration = Duration::from_secs(2);
@@ -8,6 +8,16 @@ const POLL: Duration = Duration::from_secs(2);
 #[derive(Serialize, Clone)]
 struct HardwareStats {
     cpu: f32,
+    /// Per-core usage in the kernel's core order. A game pinning two threads
+    /// while fourteen idle reads as ~12% average, so the average alone hides
+    /// exactly the case the gaming widgets exist to show.
+    cores: Vec<f32>,
+    cpu_freq_mhz: u64,
+    /// Package/die temperature, when a sensor is exposed. `None` rather than
+    /// a fake 0 on machines that publish nothing (common on Windows), so the
+    /// widget can say "no sensor" instead of claiming the CPU is at freezing.
+    cpu_temp: Option<f32>,
+    drive_temp: Option<f32>,
     ram: f32,
     ram_used_gb: f32,
     ram_total_gb: f32,
@@ -16,10 +26,45 @@ struct HardwareStats {
     uptime_secs: u64,
 }
 
-#[derive(Serialize, Clone)]
+/// GPU telemetry. Only `gpu` (utilization) is available on every platform;
+/// the rest comes from `nvidia-smi` and stays `None` elsewhere, which the
+/// widget renders as "—" rather than zero.
+#[derive(Serialize, Clone, Default)]
 struct GpuStats {
     gpu: f32,
+    name: Option<String>,
+    vram_used_mb: Option<f32>,
+    vram_total_mb: Option<f32>,
+    temp_c: Option<f32>,
+    power_w: Option<f32>,
+    power_limit_w: Option<f32>,
+    clock_mhz: Option<u32>,
+    mem_clock_mhz: Option<u32>,
+    fan_pct: Option<f32>,
 }
+
+/// Sensor labels are vendor- and platform-specific ("Tctl" on AMD,
+/// "Package id 0" on Intel, "PMU tdie" on Apple silicon), so match the most
+/// specific spelling first and fall back to the vaguest. A component that
+/// exists but reports nothing usable (Linux yields NaN on a failed read) is
+/// skipped rather than shown.
+fn pick_temp(components: &Components, keys: &[&str]) -> Option<f32> {
+    for key in keys {
+        for c in components.list() {
+            if !c.label().to_lowercase().contains(key) {
+                continue;
+            }
+            match c.temperature() {
+                Some(t) if t.is_finite() && t > 0.0 => return Some(t),
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+const CPU_TEMP_KEYS: &[&str] = &["tctl", "tdie", "package id", "cpu", "core 0", "soc"];
+const DRIVE_TEMP_KEYS: &[&str] = &["composite", "nvme", "ssd", "drive"];
 
 pub fn spawn(app: AppHandle) {
     spawn_gpu(app.clone());
@@ -27,17 +72,26 @@ pub fn spawn(app: AppHandle) {
         const GIB: f32 = 1_073_741_824.0;
         let mut sys = System::new();
         let mut networks = sysinfo::Networks::new_with_refreshed_list();
+        let mut components = Components::new_with_refreshed_list();
         loop {
-            sys.refresh_cpu_usage();
+            // Frequency as well as usage: a boost clock sagging under load is
+            // a thermal-throttle tell, which is the point of the gaming board.
+            sys.refresh_cpu_all();
             sys.refresh_memory();
+            components.refresh(false);
             // received()/transmitted() are deltas since the last refresh,
             // i.e. bytes per POLL interval.
             networks.refresh(true);
             let (rx, tx) = networks
                 .iter()
                 .fold((0u64, 0u64), |(r, t), (_, n)| (r + n.received(), t + n.transmitted()));
+            let cpus = sys.cpus();
             let stats = HardwareStats {
                 cpu: sys.global_cpu_usage(),
+                cores: cpus.iter().map(|c| c.cpu_usage()).collect(),
+                cpu_freq_mhz: cpus.first().map(|c| c.frequency()).unwrap_or(0),
+                cpu_temp: pick_temp(&components, CPU_TEMP_KEYS),
+                drive_temp: pick_temp(&components, DRIVE_TEMP_KEYS),
                 ram: sys.used_memory() as f32 / sys.total_memory() as f32 * 100.0,
                 ram_used_gb: sys.used_memory() as f32 / GIB,
                 ram_total_gb: sys.total_memory() as f32 / GIB,
@@ -68,7 +122,13 @@ fn spawn_gpu(app: AppHandle) {
             let sampled = tauri::async_runtime::spawn_blocking(sample_gpu).await;
             match sampled {
                 Ok(Ok(gpu)) => {
-                    if let Err(e) = app.emit("gpu", GpuStats { gpu }) {
+                    if let Err(e) = app.emit(
+                        "gpu",
+                        GpuStats {
+                            gpu,
+                            ..Default::default()
+                        },
+                    ) {
                         eprintln!("gpu emit failed: {e}");
                     }
                     tokio::time::sleep(GPU_POLL).await;
@@ -125,7 +185,13 @@ fn spawn_gpu(app: AppHandle) {
         loop {
             std::thread::sleep(GPU_POLL);
             if let Some(gpu) = sample_gpu_pdh(query, counter) {
-                if let Err(e) = app.emit("gpu", GpuStats { gpu }) {
+                if let Err(e) = app.emit(
+                    "gpu",
+                    GpuStats {
+                        gpu,
+                        ..Default::default()
+                    },
+                ) {
                     eprintln!("gpu emit failed: {e}");
                 }
             }
@@ -179,20 +245,23 @@ fn sample_gpu_pdh(
     }
 }
 
-/// Linux GPU utilization via `nvidia-smi`. Desktop NVIDIA is the common case
+/// Linux GPU telemetry via `nvidia-smi`. Desktop NVIDIA is the common case
 /// here; other vendors would need a sysfs/`radeontop` path, so when the tool is
 /// absent (non-NVIDIA machine, driver missing) we back off and leave the gauge
 /// blank rather than spamming — same visible result as the old no-op stub.
+///
+/// Polls on the same 2 s beat as the CPU side so the history graph's GPU trace
+/// lines up with its CPU trace instead of drawing a coarser stair-step.
 #[cfg(target_os = "linux")]
 fn spawn_gpu(app: AppHandle) {
-    const GPU_POLL: Duration = Duration::from_secs(5);
+    const GPU_POLL: Duration = POLL;
     const BACKOFF: Duration = Duration::from_secs(120);
 
     tauri::async_runtime::spawn(async move {
         loop {
             match tauri::async_runtime::spawn_blocking(sample_gpu_nvidia).await {
-                Ok(Ok(gpu)) => {
-                    if let Err(e) = app.emit("gpu", GpuStats { gpu }) {
+                Ok(Ok(stats)) => {
+                    if let Err(e) = app.emit("gpu", stats) {
                         eprintln!("gpu emit failed: {e}");
                     }
                     tokio::time::sleep(GPU_POLL).await;
@@ -210,13 +279,19 @@ fn spawn_gpu(app: AppHandle) {
     });
 }
 
-/// First GPU's utilization percentage from `nvidia-smi`. Multi-GPU rigs report
-/// one line per card; the first is the primary and enough for a single gauge.
+/// One `nvidia-smi` query for everything the GPU widget shows. Multi-GPU rigs
+/// report a line per card; the first is the primary and the only one the HUD
+/// has room for.
 #[cfg(target_os = "linux")]
-fn sample_gpu_nvidia() -> Result<f32, String> {
+fn sample_gpu_nvidia() -> Result<GpuStats, String> {
+    // `name` goes last: every other field is numeric, so whatever follows the
+    // ninth comma is the model string, commas and all.
+    const FIELDS: &str = "utilization.gpu,memory.used,memory.total,temperature.gpu,\
+power.draw,power.limit,clocks.current.sm,clocks.current.memory,fan.speed,name";
+
     let out = std::process::Command::new("nvidia-smi")
         .args([
-            "--query-gpu=utilization.gpu",
+            &format!("--query-gpu={FIELDS}"),
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -229,11 +304,42 @@ fn sample_gpu_nvidia() -> Result<f32, String> {
         ));
     }
     let text = String::from_utf8_lossy(&out.stdout);
-    text.lines()
+    let line = text.lines().next().ok_or("nvidia-smi printed nothing")?;
+    parse_nvidia(line).ok_or_else(|| format!("unparsable nvidia-smi row: {}", line.trim()))
+}
+
+/// A field is `None` when the card does not report it — an unsupported sensor
+/// prints `[N/A]`, and a blower-less card prints nothing for fan speed. Only
+/// utilization is required; the rest degrade to "—" in the widget.
+#[cfg(target_os = "linux")]
+fn parse_nvidia(line: &str) -> Option<GpuStats> {
+    let mut f = line.splitn(10, ',').map(str::trim);
+    let num = |v: Option<&str>| v.and_then(|s| s.parse::<f32>().ok());
+    let gpu: f32 = f.next()?.parse().ok()?;
+    let vram_used_mb = num(f.next());
+    let vram_total_mb = num(f.next());
+    let temp_c = num(f.next());
+    let power_w = num(f.next());
+    let power_limit_w = num(f.next());
+    let clock_mhz = num(f.next()).map(|v| v as u32);
+    let mem_clock_mhz = num(f.next()).map(|v| v as u32);
+    let fan_pct = num(f.next());
+    let name = f
         .next()
-        .and_then(|l| l.trim().parse::<f32>().ok())
-        .map(|v| v.clamp(0.0, 100.0))
-        .ok_or_else(|| "no utilization value in nvidia-smi output".into())
+        .filter(|s| !s.is_empty() && *s != "[N/A]")
+        .map(str::to_string);
+    Some(GpuStats {
+        gpu: gpu.clamp(0.0, 100.0),
+        name,
+        vram_used_mb,
+        vram_total_mb,
+        temp_c,
+        power_w,
+        power_limit_w,
+        clock_mhz,
+        mem_clock_mhz,
+        fan_pct,
+    })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
