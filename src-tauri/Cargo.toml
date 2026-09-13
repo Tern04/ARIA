@@ -74,6 +74,9 @@ wayland-scanner = "0.31"
 # _NET_ACTIVE_WINDOW and idle time from MIT-SCREEN-SAVER. Pure Rust, so no
 # libX11/libxcb link dependency (see collectors::screentime::x11).
 x11rb = { version = "0.13", features = ["screensaver"] }
+# Same version tauri links. Only for putting the window on a chosen monitor
+# under Wayland, which has no client position API (window::place_on_monitor).
+gtk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

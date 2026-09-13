@@ -291,10 +291,9 @@ pub fn spawn_wallpaper_watch(window: WebviewWindow) {
 }
 
 /// Report the display server the session is running under: "wayland", "x11",
-/// or "unknown". The frontend only attempts wallpaper alignment on X11 — on
-/// Wayland the compositor refuses to reveal a window's absolute position
-/// (reports {0,0}), so alignment is impossible and the wallpaper is cover-fit
-/// to the window instead.
+/// or "unknown". The frontend routes window placement on it: on Wayland the
+/// compositor neither honours nor reveals a window's absolute position
+/// (reports {0,0}), so placement goes by monitor via `place_on_monitor`.
 #[cfg(target_os = "linux")]
 #[tauri::command]
 pub fn display_server() -> String {
@@ -305,6 +304,66 @@ pub fn display_server() -> String {
     } else {
         "unknown".into()
     }
+}
+
+/// Put the window on monitor `index` (the order of `availableMonitors()`, which
+/// is GDK's own order), maximized there when `fill` is set.
+///
+/// Wayland only — X11 positions with plain `setPosition` from the frontend.
+/// Wayland has no client-side position request at all: `setPosition` is
+/// silently dropped and `outerPosition()` always reports {0,0}, so the picker
+/// could never move the window and a restore from saved coordinates left it
+/// wherever Mutter's placement put a new 1280×800 window — straddling both
+/// monitors. The one protocol request that does name an output is fullscreen
+/// (`xdg_toplevel.set_fullscreen(output)`); Mutter moves the window, *and its
+/// saved un-fullscreen geometry*, onto that monitor. Dropping fullscreen then
+/// leaves it there, and maximize fills that monitor's work area.
+///
+/// Each step waits for the compositor to configure the previous one; a state
+/// change requested before the last one lands gets folded into it and lost.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+pub async fn place_on_monitor(window: WebviewWindow, index: i32, fill: bool) -> Result<(), String> {
+    use gtk::prelude::*;
+
+    const SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
+
+    fn on_main(
+        window: &WebviewWindow,
+        f: impl FnOnce(&gtk::ApplicationWindow) + Send + 'static,
+    ) -> Result<(), String> {
+        let w = window.clone();
+        window
+            .run_on_main_thread(move || match w.gtk_window() {
+                Ok(gtk_window) => f(&gtk_window),
+                Err(e) => eprintln!("place_on_monitor: no GTK window: {e}"),
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    on_main(&window, move |w| {
+        let Some(screen) = WidgetExt::screen(w) else {
+            return eprintln!("place_on_monitor: window has no screen");
+        };
+        if index < 0 || index >= screen.display().n_monitors() {
+            return eprintln!("place_on_monitor: no monitor {index}");
+        }
+        w.unmaximize();
+        w.fullscreen_on_monitor(&screen, index);
+    })?;
+    tokio::time::sleep(SETTLE).await;
+    on_main(&window, |w| w.unfullscreen())?;
+    if fill {
+        tokio::time::sleep(SETTLE).await;
+        on_main(&window, |w| w.maximize())?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+pub async fn place_on_monitor(_index: i32, _fill: bool) -> Result<(), String> {
+    Err("place_on_monitor is Wayland-only".into())
 }
 
 #[cfg(not(target_os = "linux"))]

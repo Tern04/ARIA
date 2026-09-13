@@ -50,6 +50,7 @@ pub fn run() {
             window::set_overlay,
             window::desktop_background,
             window::display_server,
+            window::place_on_monitor,
             wallpaper::wallpaper_config,
             wallpaper::wallpaper_set,
             wallpaper::wallpaper_media_url,

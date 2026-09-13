@@ -2305,7 +2305,50 @@ function initThemePicker() {
 
 /* ── window placement: monitor picker, fill screen, move/resize ──
    Geometry persists in physical pixels (per-monitor-DPI safe) under
-   "aria-window": { x, y, w, h, fill, preFill: {w, h} }. */
+   "aria-window": { x, y, w, h, fill, preFill: {w, h}, mon: {x, y, w, h} }.
+   `mon` is the monitor the window was last on, by geometry. */
+
+// Wayland gives a client no say over, or knowledge of, its own position:
+// setPosition() is dropped and outerPosition() is always {0,0}. Monitor
+// geometry *is* real there, so placement goes by monitor instead, through
+// window::place_on_monitor. Resolved once; everything below awaits it.
+const onWayland = IS_LINUX
+  ? window.__TAURI__.core.invoke("display_server").then((d) => d === "wayland").catch(() => false)
+  : Promise.resolve(false);
+
+// Monitor names are the EDID model string, so two identical panels share one
+// name — which lit every entry in the picker at once. Geometry is unique.
+function sameMonitor(a, b) {
+  return (
+    !!a && !!b &&
+    a.position.x === b.position.x && a.position.y === b.position.y &&
+    a.size.width === b.size.width && a.size.height === b.size.height
+  );
+}
+
+function monitorRect(m) {
+  return { x: m.position.x, y: m.position.y, w: m.size.width, h: m.size.height };
+}
+
+function matchesRect(m, r) {
+  return !!r && m.position.x === r.x && m.position.y === r.y &&
+    m.size.width === r.w && m.size.height === r.h;
+}
+
+// Wayland: move onto monitor m (maximized if fill), then restore a plain size.
+async function placeOnMonitorWayland(m, fill, w, h) {
+  const W = window.__TAURI__.window;
+  const monitors = await W.availableMonitors();
+  const index = monitors.findIndex((x) => sameMonitor(x, m));
+  if (index < 0) return;
+  await window.__TAURI__.core.invoke("place_on_monitor", { index, fill });
+  if (!fill && w && h) {
+    const wa = workArea(m);
+    await W.getCurrentWindow().setSize(
+      new W.PhysicalSize(Math.min(w, wa.size.width), Math.min(h, wa.size.height)),
+    );
+  }
+}
 
 function loadWinState() {
   try {
@@ -2364,6 +2407,7 @@ async function placeCentered(m, w, h) {
 }
 
 async function fillMonitor(m) {
+  if (await onWayland) return placeOnMonitorWayland(m, true);
   const W = window.__TAURI__.window;
   const wa = workArea(m);
   const win = W.getCurrentWindow();
@@ -2386,12 +2430,18 @@ async function restoreWindowState() {
   const W = window.__TAURI__.window;
   try {
     const monitors = await W.availableMonitors();
+    const wayland = await onWayland;
     const cx = s.x + s.w / 2;
     const cy = s.y + s.h / 2;
-    const target = monitors.find((m) => {
-      const { position: p, size: z } = m;
-      return cx >= p.x && cx < p.x + z.width && cy >= p.y && cy < p.y + z.height;
-    });
+    // The remembered monitor first; the saved centre point is the fallback for
+    // state written before `mon` existed. Wayland's saved x/y are only ever
+    // derived from `mon` (see the saver), so the fallback is sound there too.
+    const target =
+      monitors.find((m) => matchesRect(m, s.mon)) ||
+      monitors.find((m) => {
+        const { position: p, size: z } = m;
+        return cx >= p.x && cx < p.x + z.width && cy >= p.y && cy < p.y + z.height;
+      });
     if (!target) {
       // Saved monitor is gone; land on the primary instead.
       const primary = await W.primaryMonitor();
@@ -2403,6 +2453,8 @@ async function restoreWindowState() {
     }
     if (s.fill) {
       await fillMonitor(target);
+    } else if (wayland) {
+      await placeOnMonitorWayland(target, false, s.w, s.h);
     } else {
       const win = W.getCurrentWindow();
       // A window the WM left maximized ignores both calls below.
@@ -2450,17 +2502,18 @@ function initDisplayMenu() {
   async function moveTo(m) {
     if ((loadWinState() || {}).fill) {
       await fillMonitor(m);
-      return;
+    } else {
+      // Keep the visual (logical) size when the target DPI differs.
+      const win = W.getCurrentWindow();
+      const size = await win.innerSize();
+      const scale = await win.scaleFactor();
+      const w = Math.round((size.width / scale) * m.scaleFactor);
+      const h = Math.round((size.height / scale) * m.scaleFactor);
+      if (await onWayland) await placeOnMonitorWayland(m, false, w, h);
+      else await placeCentered(m, w, h);
     }
-    // Keep the visual (logical) size when the target DPI differs.
-    const win = W.getCurrentWindow();
-    const size = await win.innerSize();
-    const scale = await win.scaleFactor();
-    await placeCentered(
-      m,
-      Math.round((size.width / scale) * m.scaleFactor),
-      Math.round((size.height / scale) * m.scaleFactor),
-    );
+    // Wayland never reports a move, so the saver would not record this.
+    saveWinState({ mon: monitorRect(m) });
   }
 
   async function toggleFill() {
@@ -2500,7 +2553,7 @@ function initDisplayMenu() {
     monitors.forEach((m, i) => {
       const b = document.createElement("button");
       b.textContent = `Display ${i + 1} — ${m.size.width}×${m.size.height}`;
-      if (current && m.name === current.name) b.classList.add("active");
+      if (sameMonitor(m, current)) b.classList.add("active");
       b.addEventListener("click", () => moveTo(m));
       list.append(b);
     });
@@ -2566,9 +2619,21 @@ function initWindowStateSaver() {
     clearTimeout(t);
     t = setTimeout(async () => {
       try {
-        const pos = await win.outerPosition();
         const size = await win.innerSize();
-        const patch = { x: pos.x, y: pos.y, w: size.width, h: size.height };
+        const cur = await W.currentMonitor();
+        const patch = { w: size.width, h: size.height };
+        if (cur) patch.mon = monitorRect(cur);
+        if (!(await onWayland)) {
+          const pos = await win.outerPosition();
+          patch.x = pos.x;
+          patch.y = pos.y;
+        } else if (cur) {
+          // outerPosition() is a constant {0,0} here. Record the window as
+          // centred on its monitor, so an X11 session restoring this state
+          // lands on the same screen.
+          patch.x = Math.round(cur.position.x + (cur.size.width - size.width) / 2);
+          patch.y = Math.round(cur.position.y + (cur.size.height - size.height) / 2);
+        }
         const s = loadWinState() || {};
         // A size that no longer matches the work area means the user resized
         // manually and broke fill — unless the window is genuinely maximized,
