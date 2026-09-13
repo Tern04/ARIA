@@ -46,6 +46,16 @@ THEMES.aurora = {
   tip: "#e4f4ef",
   glow: true,
 };
+THEMES.scuderia = {
+  accent: "#ff2800",
+  // Rev lights: giallo at low load, into the red as the gauge fills.
+  accentFrom: "#ffd500",
+  track: "rgba(255, 236, 228, 0.08)",
+  r: 0.4,
+  lw: 0.075,
+  tip: "#ffffff",
+  glow: true,
+};
 THEMES.terminal = {
   accent: "#33ff66",
   track: "rgba(51, 255, 102, 0.12)",

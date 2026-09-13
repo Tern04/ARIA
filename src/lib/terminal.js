@@ -63,6 +63,17 @@ const PALETTES = {
     brightYellow: "#f8dc94", brightBlue: "#74b3f0", brightMagenta: "#d0acf0",
     brightCyan: "#86e0f0", brightWhite: "#f3fbf8",
   },
+  scuderia: {
+    // Pit wall: rosso leads, but errors keep a distinct pinker red and
+    // green stays a real green so diffs still read.
+    foreground: "#f5f1ef", cursor: "#ff2800", cursorAccent: "#0e0c0d",
+    selectionBackground: "rgba(255, 40, 0, 0.26)",
+    black: "#2a2526", red: "#ff5c8a", green: "#3ddc84", yellow: "#ffd500",
+    blue: "#5c9dff", magenta: "#ff4d4d", cyan: "#5ed3d8", white: "#d9d1ce",
+    brightBlack: "#7a716e", brightRed: "#ff8aab", brightGreen: "#74eaa8",
+    brightYellow: "#ffe45c", brightBlue: "#8ab8ff", brightMagenta: "#ff7a6b",
+    brightCyan: "#8ee3e6", brightWhite: "#ffffff",
+  },
   terminal: {
     // Phosphor CRT: everything bends towards green, but the semantic colours
     // stay distinguishable or `ls` and diffs turn to mush.

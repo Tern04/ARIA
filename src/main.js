@@ -2256,7 +2256,7 @@ function initPresetMenu() {
   });
 }
 
-const THEME_NAMES = ["studio", "jarvis", "porcelain", "nord", "aurora", "terminal"];
+const THEME_NAMES = ["studio", "jarvis", "porcelain", "nord", "aurora", "scuderia", "terminal"];
 
 function redrawGauges() {
   for (const name of ["cpu", "ram", "gpu"]) {

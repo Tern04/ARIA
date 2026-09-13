@@ -56,6 +56,7 @@
 .theme-menu button[data-theme="porcelain"] { --swatch: #3450d2; }
 .theme-menu button[data-theme="nord"] { --swatch: #88c0d0; }
 .theme-menu button[data-theme="aurora"] { --swatch: linear-gradient(135deg, #7df5c0, #3ee89b 45%, #4cc9e0); }
+.theme-menu button[data-theme="scuderia"] { --swatch: linear-gradient(90deg, #ff2800 0 68%, #ffd500 68%); }
 .theme-menu button[data-theme="terminal"] { --swatch: #33ff66; }
 
 .theme-menu button:hover {
