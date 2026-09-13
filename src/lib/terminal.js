@@ -52,6 +52,17 @@ const PALETTES = {
     brightYellow: "#ebcb8b", brightBlue: "#81a1c1", brightMagenta: "#b48ead",
     brightCyan: "#8fbcbb", brightWhite: "#eceff4",
   },
+  aurora: {
+    // Northern lights: greens and cyans lead, the sky's fringes supply the
+    // warm semantics so errors still read as errors.
+    foreground: "#e4f4ef", cursor: "#3ee89b", cursorAccent: "#04161b",
+    selectionBackground: "rgba(62, 232, 155, 0.26)",
+    black: "#0b2a30", red: "#ff6f91", green: "#3ee89b", yellow: "#f3c969",
+    blue: "#3f8fd8", magenta: "#b98ae0", cyan: "#4cc9e0", white: "#cfe6e0",
+    brightBlack: "#5f7f7a", brightRed: "#ff94ad", brightGreen: "#7df5c0",
+    brightYellow: "#f8dc94", brightBlue: "#74b3f0", brightMagenta: "#d0acf0",
+    brightCyan: "#86e0f0", brightWhite: "#f3fbf8",
+  },
   terminal: {
     // Phosphor CRT: everything bends towards green, but the semantic colours
     // stay distinguishable or `ls` and diffs turn to mush.

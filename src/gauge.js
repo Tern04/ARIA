@@ -36,6 +36,16 @@ THEMES.nord = {
   tip: "#eceff4",
   glow: false,
 };
+THEMES.aurora = {
+  accent: "#3ee89b",
+  // The arc shades from glacier cyan at rest to the curtain's green at full.
+  accentFrom: "#4cc9e0",
+  track: "rgba(190, 255, 225, 0.08)",
+  r: 0.4,
+  lw: 0.065,
+  tip: "#e4f4ef",
+  glow: true,
+};
 THEMES.terminal = {
   accent: "#33ff66",
   track: "rgba(51, 255, 102, 0.12)",
@@ -81,7 +91,16 @@ export function drawGauge(canvas, value) {
   // fill
   ctx.beginPath();
   ctx.arc(cx, cy, r, arcStart, arcStart + filled);
-  ctx.strokeStyle = cfg.accent;
+  if (cfg.accentFrom) {
+    // Left-to-right matches the arc's sweep: it starts bottom-left and ends
+    // bottom-right, so a fuller gauge reaches further into the accent.
+    const grad = ctx.createLinearGradient(cx - r, 0, cx + r, 0);
+    grad.addColorStop(0, cfg.accentFrom);
+    grad.addColorStop(1, cfg.accent);
+    ctx.strokeStyle = grad;
+  } else {
+    ctx.strokeStyle = cfg.accent;
+  }
   ctx.lineWidth = lineWidth;
   ctx.lineCap = "round";
   if (cfg.glow) {
