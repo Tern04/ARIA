@@ -117,6 +117,8 @@
                 <input id="preset-name" type="text" placeholder="preset name" maxlength="24"
                        autocomplete="off" spellcheck="false" aria-label="Preset name" />
               </form>
+              <button class="auto-toggle" id="auto-toggle" title="Let presets with a ⚡ trigger apply themselves">Auto-switch</button>
+              <div class="auto-status" id="auto-status" hidden></div>
             </div>
           </div>
           <button class="pin-toggle" id="edit-toggle" aria-label="Edit layout" title="Edit layout">
@@ -378,6 +380,17 @@
           </div>
         </section>
 
+        <section class="widget widget--notes" id="widget-notes">
+          <h2 class="widget-label">NOTES</h2>
+          <div class="widget-body">
+            <div class="note-list" id="note-list"></div>
+            <form class="note-new" id="note-new">
+              <input id="note-input" type="text" maxlength="140" placeholder="note…  ! pins,  @17:00 reminds"
+                     autocomplete="off" spellcheck="false" aria-label="New note" />
+            </form>
+          </div>
+        </section>
+
         <section class="widget widget--terminal" id="widget-terminal">
           <h2 class="widget-label">TERMINAL
             <button class="term-restart" id="term-restart" title="New shell (Ctrl+Shift+R)" aria-label="Start a new shell">
@@ -410,5 +423,10 @@
     </div>
     <div class="win-move" id="win-move" title="Move window">✥ move</div>
     <div class="win-resize" id="win-resize" title="Resize window"></div>
+    <!-- Auto-switch notice: which preset applied itself and why, with Undo. -->
+    <div class="auto-toast" id="auto-toast" role="status" hidden>
+      <span class="auto-toast-text" id="auto-toast-text"></span>
+      <button id="auto-toast-undo">Undo</button>
+    </div>
   </body>
 </html>

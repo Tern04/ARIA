@@ -6,6 +6,8 @@
 // since been removed, omit one that did not exist yet, or pin a size preset
 // whose shape has changed. None of those may produce a broken board.
 
+import { DEFAULT_LEAD } from "./automation.js";
+
 export const MAX_PRESETS = 8;
 export const MAX_NAME = 24;
 
@@ -30,6 +32,7 @@ export const BUILTIN_PRESETS = [
   {
     name: "Gaming",
     version: 2,
+    trigger: { kind: "game" },
     board: {
       gpu:        { c: 1, r: 1, size: "l", hidden: false },
       perf:       { c: 7, r: 1, size: "l", hidden: false },
@@ -47,6 +50,57 @@ export const BUILTIN_PRESETS = [
       stag:       { c: 1, r: 1, size: "m", hidden: true },
       terminal:   { c: 7, r: 1, size: "m", hidden: true },
       calendar:   { c: 1, r: 1, size: "m", hidden: true },
+      notes:      { c: 1, r: 1, size: "m", hidden: true },
+    },
+  },
+  {
+    // The editor is somewhere else — this is the board beside it: the shell at
+    // half width, what the repo is doing, what the machine is doing, and a
+    // place to write down the thing you must not forget after this function.
+    name: "Coding",
+    version: 1,
+    trigger: { kind: "app", apps: ["jetbrains", "code"] },
+    board: {
+      terminal:   { c: 1, r: 1, size: "m", hidden: false },
+      github:     { c: 7, r: 1, size: "m", hidden: false },
+      notes:      { c: 10, r: 1, size: "m", hidden: false },
+      perf:       { c: 7, r: 3, size: "m", hidden: false },
+      thermals:   { c: 10, r: 3, size: "m", hidden: false },
+      hardware:   { c: 1, r: 5, size: "m", hidden: false },
+      music:      { c: 4, r: 5, size: "m", hidden: false },
+      email:      { c: 7, r: 5, size: "s", hidden: false },
+      discord:    { c: 7, r: 6, size: "s", hidden: false },
+      crypto:     { c: 10, r: 5, size: "s", hidden: false },
+      latency:    { c: 10, r: 6, size: "s", hidden: false },
+      stag:       { c: 1, r: 1, size: "m", hidden: true },
+      calendar:   { c: 1, r: 1, size: "m", hidden: true },
+      gpu:        { c: 1, r: 1, size: "m", hidden: true },
+      screentime: { c: 1, r: 1, size: "s", hidden: true },
+    },
+  },
+  {
+    // The lecture-day board: the week, what is on today, and the notes for it
+    // side by side — the three things a class actually needs — with mail and
+    // the repo below them and no telemetry at all.
+    name: "Study",
+    version: 1,
+    trigger: { kind: "class", lead: DEFAULT_LEAD },
+    board: {
+      stag:       { c: 1, r: 1, size: "m", hidden: false },
+      calendar:   { c: 7, r: 1, size: "m", hidden: false },
+      notes:      { c: 10, r: 1, size: "m", hidden: false },
+      email:      { c: 7, r: 3, size: "m", hidden: false },
+      github:     { c: 10, r: 3, size: "m", hidden: false },
+      screentime: { c: 1, r: 5, size: "m", hidden: false },
+      music:      { c: 4, r: 5, size: "m", hidden: false },
+      hardware:   { c: 7, r: 5, size: "s", hidden: false },
+      discord:    { c: 7, r: 6, size: "s", hidden: false },
+      crypto:     { c: 10, r: 5, size: "s", hidden: false },
+      latency:    { c: 10, r: 6, size: "s", hidden: false },
+      terminal:   { c: 7, r: 1, size: "m", hidden: true },
+      gpu:        { c: 1, r: 1, size: "m", hidden: true },
+      thermals:   { c: 1, r: 1, size: "m", hidden: true },
+      perf:       { c: 1, r: 1, size: "m", hidden: true },
     },
   },
 ];
@@ -60,6 +114,12 @@ export const BUILTIN_PRESETS = [
  * replaces a same-named one — that is how a revision reaches a board that
  * already has the old copy. It is never added over a full list: the user's own
  * arrangements outrank ours, and `withPreset` would evict the oldest.
+ *
+ * `triggers` carries the auto-switch rule of each preset that was actually
+ * seeded this time, for the caller to fold into its rules. It rides along with
+ * the preset rather than being seeded separately so that a shipped rule
+ * arrives exactly once, with the board it belongs to: a trigger the user then
+ * changes or clears is theirs, and is never written back over.
  */
 export function applyBuiltins(presets, seededRaw, widgets) {
   let seeded = {};
@@ -69,6 +129,7 @@ export function applyBuiltins(presets, seededRaw, widgets) {
   } catch {}
   let next = presets;
   const record = { ...seeded };
+  const triggers = {};
   for (const builtin of BUILTIN_PRESETS) {
     const name = normalizeName(builtin.name);
     if (record[name] === builtin.version) continue;
@@ -77,8 +138,39 @@ export function applyBuiltins(presets, seededRaw, widgets) {
     if (!replacing && next.length >= MAX_PRESETS) continue;
     next = withPreset(next, name, builtin.board, widgets);
     record[name] = builtin.version;
+    if (builtin.trigger) triggers[name] = builtin.trigger;
   }
-  return { presets: next, seeded: record };
+  return { presets: next, seeded: record, triggers };
+}
+
+/**
+ * A preset may carry its own backdrop, worn while that preset is on the board.
+ * Cleaned field by field like a board: a preset is stored data, and stored
+ * data is never handed to the wallpaper layer as it was found.
+ */
+export function sanitizeWallpaper(raw) {
+  if (!raw || !["desktop", "file", "none"].includes(raw.source)) return null;
+  const num = (v, min, max, fallback) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : fallback;
+  };
+  // Every field the Rust side's config carries, always: it deserializes into
+  // a struct with no defaults, so a half-filled object is rejected outright.
+  const wp = {
+    source: raw.source,
+    path: null,
+    kind: raw.kind === "video" ? "video" : "image",
+    fit: ["cover", "contain", "fill"].includes(raw.fit) ? raw.fit : "cover",
+    dim: num(raw.dim, 0, 1, 0),
+    blur: Math.round(num(raw.blur, 0, 60, 0)),
+    muted: raw.muted !== false,
+    loop: raw.loop !== false,
+  };
+  if (wp.source !== "file") return wp;
+  const path = String(raw.path ?? "");
+  // "file" with no path is not a usable state; Rust's sanitize says the same.
+  if (!path) return null;
+  return { ...wp, path };
 }
 
 /** Trim a user-typed name to something storable; "" when nothing is left. */
@@ -127,19 +219,40 @@ export function parsePresets(raw, widgets) {
     // which is not what its name promises.
     if (!Object.keys(board).length) continue;
     seen.add(name);
-    out.push({ name, board });
+    const wallpaper = sanitizeWallpaper(entry?.wallpaper);
+    out.push(wallpaper ? { name, board, wallpaper } : { name, board });
     if (out.length >= MAX_PRESETS) break;
   }
   return out;
 }
 
-/** Add or overwrite a preset. Oldest gives way once the cap is reached. */
-export function withPreset(presets, name, board, widgets) {
+/**
+ * Add or overwrite a preset. Oldest gives way once the cap is reached.
+ *
+ * Re-saving a preset keeps the wallpaper it already had, unless one is passed:
+ * saving a rearranged board is about the board, and silently dropping the
+ * backdrop with it would be a second, unasked-for change.
+ */
+export function withPreset(presets, name, board, widgets, wallpaper) {
   const clean = normalizeName(name);
   if (!clean) return presets;
+  const existing = presets.find((p) => p.name === clean);
+  const wp = sanitizeWallpaper(wallpaper === undefined ? existing?.wallpaper : wallpaper);
   const rest = presets.filter((p) => p.name !== clean);
-  const next = [...rest, { name: clean, board: sanitizeBoard(board, widgets) }];
+  const entry = { name: clean, board: sanitizeBoard(board, widgets) };
+  const next = [...rest, wp ? { ...entry, wallpaper: wp } : entry];
   return next.slice(Math.max(0, next.length - MAX_PRESETS));
+}
+
+/** Give a preset its own wallpaper, or take it away with null. */
+export function withPresetWallpaper(presets, name, wallpaper) {
+  const clean = normalizeName(name);
+  const wp = sanitizeWallpaper(wallpaper);
+  return presets.map((p) => {
+    if (p.name !== clean) return p;
+    const { wallpaper: _drop, ...rest } = p;
+    return wp ? { ...rest, wallpaper: wp } : rest;
+  });
 }
 
 export function withoutPreset(presets, name) {

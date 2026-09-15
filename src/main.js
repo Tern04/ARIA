@@ -4,14 +4,37 @@ import { HISTORY_LEN, autoScale, latest, peak, pushSample, seriesPaths } from ".
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import { WIDGETS, defaultLayout } from "./lib/widgets.js";
 import {
+  addNote,
+  dueLabel,
+  noteStatus,
+  notesSummary,
+  orderNotes,
+  parseNotes,
+  removeNote,
+  toggleNote,
+} from "./lib/notes.js";
+import {
   applyBuiltins,
   boardToLayout,
   matchingPreset,
   normalizeName,
   parsePresets,
+  sanitizeWallpaper,
   withPreset,
+  withPresetWallpaper,
   withoutPreset,
 } from "./lib/presets.js";
+import {
+  GPU_BUSY,
+  LEAD_CHOICES,
+  TRIGGER_KINDS,
+  automationAgenda,
+  initialState,
+  overridden,
+  parseAutomation,
+  sanitizeTrigger,
+  step,
+} from "./lib/automation.js";
 import {
   GRID_COLS,
   GRID_ROWS,
@@ -1466,6 +1489,8 @@ async function initCollectors() {
     renderThermals();
   });
 
+  on("activity", (e) => onActivity(e.payload));
+
   on("latency", (e) => {
     latencyData = e.payload;
     renderLatency();
@@ -1882,6 +1907,139 @@ function initPinToggle() {
   });
 }
 
+/* ── NOTES widget ───────────────────────────────────────────
+   A short list of things to do, kept in localStorage — no service behind it.
+   What a typed line means and what order the list comes out in live in
+   lib/notes.js; this is the widget around them.
+
+   It is the one widget the board can put in front of you at the right moment
+   and have it be useful on its own: the Study preset places it beside the
+   timetable, so the reminders for a lecture are there when the lecture is. */
+
+const NOTES_KEY = "aria-notes";
+let notes = [];
+// Rows a size can show; the order in lib/notes.js decides which ones they are.
+const NOTE_ROWS = { s: 0, m: 4, l: 9 };
+
+function persistNotes() {
+  try {
+    localStorage.setItem(NOTES_KEY, JSON.stringify(notes));
+  } catch {}
+}
+
+function initNotes() {
+  try {
+    notes = parseNotes(localStorage.getItem(NOTES_KEY));
+  } catch {}
+  const form = document.getElementById("note-new");
+  const input = document.getElementById("note-input");
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    notes = addNote(notes, input.value, Date.now());
+    input.value = "";
+    persistNotes();
+    renderNotes();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") input.blur();
+  });
+  // A reminder crosses into "soon" and then "overdue" without anything being
+  // typed, and the order changes with it.
+  setInterval(renderNotes, 30_000);
+  renderNotes();
+}
+
+function renderNotes() {
+  const el = document.getElementById("widget-notes");
+  if (!el) return;
+  const size = el.dataset.size || "m";
+  const list = document.getElementById("note-list");
+  const now = Date.now();
+  list.replaceChildren();
+  document.getElementById("note-new").hidden = size === "s";
+
+  if (size === "s") {
+    const { open, next } = notesSummary(notes, now);
+    const head = document.createElement("div");
+    head.className = "note-head";
+    const count = document.createElement("span");
+    count.className = "note-count";
+    count.textContent = open ? `${open}` : "0";
+    const label = document.createElement("span");
+    label.className = "note-count-label";
+    label.textContent = open === 1 ? "open note" : "open notes";
+    head.append(count, label);
+    list.append(head);
+    if (next) {
+      const soon = document.createElement("div");
+      soon.className = `note-next is-${noteStatus(next, now) || "plain"}`;
+      soon.textContent = `${dueLabel(next.due, now)} · ${next.text}`;
+      list.append(soon);
+    }
+    return;
+  }
+
+  const ordered = orderNotes(notes, now);
+  if (!ordered.length) {
+    const empty = document.createElement("div");
+    empty.className = "note-empty";
+    empty.textContent = "Nothing noted. Type below — ! pins it, @17:00 sets a reminder.";
+    list.append(empty);
+    return;
+  }
+  for (const note of ordered.slice(0, NOTE_ROWS[size])) {
+    const row = document.createElement("div");
+    row.className = "note-row";
+    if (note.done) row.classList.add("is-done");
+    if (note.pinned && !note.done) row.classList.add("is-pinned");
+
+    const check = document.createElement("button");
+    check.className = "note-check";
+    check.textContent = note.done ? "✓" : "";
+    check.title = note.done ? "Mark as still to do" : "Mark as done";
+    check.setAttribute("aria-label", check.title);
+    check.addEventListener("click", () => {
+      notes = toggleNote(notes, note.id, Date.now());
+      persistNotes();
+      renderNotes();
+    });
+
+    const text = document.createElement("span");
+    text.className = "note-text";
+    text.textContent = note.text;
+    text.title = note.text;
+
+    const del = document.createElement("button");
+    del.className = "note-del";
+    del.textContent = "×";
+    del.title = "Delete note";
+    del.setAttribute("aria-label", `Delete note ${note.text}`);
+    del.addEventListener("click", () => {
+      notes = removeNote(notes, note.id);
+      persistNotes();
+      renderNotes();
+    });
+
+    row.append(check, text);
+    if (note.due != null) {
+      const due = document.createElement("span");
+      const state = noteStatus(note, now);
+      due.className = `note-due${state ? ` is-${state}` : ""}`;
+      due.textContent = dueLabel(note.due, now);
+      row.append(due);
+    }
+    row.append(del);
+    list.append(row);
+  }
+  const hidden = ordered.length - NOTE_ROWS[size];
+  if (hidden > 0) {
+    const more = document.createElement("div");
+    more.className = "note-more";
+    more.textContent = `+${hidden} more`;
+    list.append(more);
+  }
+}
+
 // ── customizable layout ─────────────────────────────────────
 // Phone-style widget board: a 12×6 cell grid where every widget
 // occupies a cell rect. Size presets (s/m/l → [cols, rows]) work like
@@ -1889,25 +2047,41 @@ function initPinToggle() {
 // Edit mode (pencil in the header) allows drag-to-move, size cycling,
 // and hiding widgets into a tray. Layout persists in localStorage.
 
+// Declared ahead of the first saveLayout() below, which reads them.
+let autoApplying = false;
+let savedLayoutJson = null;
 let layout = loadLayout();
 normalizeLayout();
+savedLayoutJson = JSON.stringify(layout);
 
 function loadLayout() {
-  const base = defaultLayout();
   try {
-    const saved = JSON.parse(localStorage.getItem("aria-layout"));
-    for (const id of Object.keys(base)) {
-      if (saved?.[id] && WIDGETS[id].sizes[saved[id].size]) {
-        Object.assign(base[id], saved[id]);
-      }
+    return layoutFrom(JSON.parse(localStorage.getItem("aria-layout")));
+  } catch {
+    return defaultLayout();
+  }
+}
+
+/** A complete layout from a stored one, skipping sizes that no longer exist. */
+function layoutFrom(saved) {
+  const base = defaultLayout();
+  for (const id of Object.keys(base)) {
+    if (saved?.[id] && WIDGETS[id].sizes[saved[id].size]) {
+      Object.assign(base[id], saved[id]);
     }
-  } catch {}
+  }
   return base;
 }
 
 function saveLayout() {
+  const json = JSON.stringify(layout);
+  // Any save that actually changes the board, and isn't auto-switching's own,
+  // is the user taking the board back. A click in edit mode saves too, but
+  // without moving anything, so it doesn't count.
+  if (savedLayoutJson !== null && json !== savedLayoutJson && !autoApplying) boardChangedByHand();
+  savedLayoutJson = json;
   try {
-    localStorage.setItem("aria-layout", JSON.stringify(layout));
+    localStorage.setItem("aria-layout", json);
   } catch {}
 }
 
@@ -1960,6 +2134,7 @@ function applyLayout() {
   renderThermals();
   renderPerf();
   renderLatency();
+  renderNotes();
   syncTerminal();
 }
 
@@ -2133,12 +2308,30 @@ function initLayout() {
 const PRESETS_KEY = "aria-presets";
 const SEEDED_KEY = "aria-presets-seeded";
 let presets = [];
+// Re-renders the preset menu when it is open; set by initPresetMenu().
+let renderPresetMenu = () => {};
 
 function persistPresets() {
   try {
     localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
   } catch {}
 }
+
+/**
+ * Put a preset on the board: its arrangement, and the backdrop it carries (or
+ * back to the saved wallpaper when it carries none).
+ */
+function showBoard(preset) {
+  layout = boardToLayout(preset.board, defaultLayout());
+  // A preset can go stale — a widget's size preset may have changed shape
+  // since it was saved — so it is normalized like any other layout.
+  normalizeLayout();
+  saveLayout();
+  applyLayout();
+  applyPresetWallpaper(preset.wallpaper ?? null);
+}
+
+const TRIGGER_LABELS = { game: "Game", app: "App", gpu: "GPU", class: "Class" };
 
 function initPresetMenu() {
   const btn = document.getElementById("preset-btn");
@@ -2147,6 +2340,10 @@ function initPresetMenu() {
   const saveBtn = document.getElementById("preset-save");
   const form = document.getElementById("preset-new");
   const input = document.getElementById("preset-name");
+  const autoBtn = document.getElementById("auto-toggle");
+  const status = document.getElementById("auto-status");
+  // The preset whose trigger editor is open, if any.
+  let editing = null;
 
   try {
     const stored = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
@@ -2156,6 +2353,21 @@ function initPresetMenu() {
     presets = seeding.presets;
     if (presets !== stored) persistPresets();
     localStorage.setItem(SEEDED_KEY, JSON.stringify(seeding.seeded));
+    // A shipped preset brings its trigger with it, but never over one that is
+    // already there: that one is the user's.
+    let seededRule = false;
+    for (const [name, trigger] of Object.entries(seeding.triggers)) {
+      if (automation.rules[name]) continue;
+      const clean = sanitizeTrigger(trigger);
+      if (!clean) continue;
+      automation.rules[name] = clean;
+      seededRule = true;
+    }
+    if (seededRule) persistAutomation();
+    // A preset with its own backdrop keeps it across launches: if the board
+    // still is that preset, wear it again.
+    const onBoard = presets.find((p) => p.name === matchingPreset(layout, presets));
+    if (onBoard?.wallpaper) applyPresetWallpaper(onBoard.wallpaper);
   } catch {}
 
   const closeNaming = () => {
@@ -2164,8 +2376,163 @@ function initPresetMenu() {
     input.value = "";
   };
 
+  const setTrigger = (name, trigger) => {
+    const clean = sanitizeTrigger(trigger);
+    if (clean) automation.rules[name] = clean;
+    else delete automation.rules[name];
+    persistAutomation();
+  };
+
+  const triggerEditor = (name) => {
+    const trigger = automation.rules[name];
+    const box = document.createElement("div");
+    box.className = "trigger-editor";
+
+    const seg = document.createElement("div");
+    seg.className = "wp-seg";
+    for (const kind of [null, ...TRIGGER_KINDS]) {
+      const b = document.createElement("button");
+      b.textContent = kind ? TRIGGER_LABELS[kind] : "Off";
+      b.classList.toggle("active", (trigger?.kind ?? null) === kind);
+      b.addEventListener("click", () => {
+        setTrigger(name, kind && { ...trigger, kind });
+        render();
+      });
+      seg.append(b);
+    }
+    box.append(seg);
+
+    const hint = document.createElement("div");
+    hint.className = "trigger-hint";
+    box.append(hint);
+
+    switch (trigger?.kind) {
+      case undefined:
+        hint.textContent = "Applied by hand only.";
+        break;
+      case "game":
+        hint.textContent = "When a Steam game window has focus.";
+        break;
+      case "gpu":
+        hint.textContent = `When the GPU has been at ${GPU_BUSY}% or more for 30 s.`;
+        break;
+      case "app": {
+        hint.textContent = "When one of these apps has focus:";
+        const field = document.createElement("input");
+        field.type = "text";
+        field.className = "trigger-apps";
+        field.placeholder = "code, okular";
+        field.spellcheck = false;
+        field.autocomplete = "off";
+        field.value = trigger.apps.join(", ");
+        // Saved as typed but not re-rendered, which would steal the caret.
+        field.addEventListener("input", () => setTrigger(name, { kind: "app", apps: field.value }));
+        field.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") render();
+        });
+        box.append(field);
+        // Names come out of the window system in forms nobody would guess
+        // ("Steam_app_730", "Code-oss"), so offer the one that last had focus.
+        if (lastFocusedApp) {
+          const use = document.createElement("button");
+          use.className = "trigger-use";
+          use.textContent = `+ ${lastFocusedApp}`;
+          use.title = "Add the app that last had focus";
+          use.addEventListener("click", () => {
+            setTrigger(name, { kind: "app", apps: [...trigger.apps, lastFocusedApp] });
+            render();
+          });
+          box.append(use);
+        }
+        break;
+      }
+      case "class": {
+        hint.textContent = "When a class or calendar event starts within:";
+        const leads = document.createElement("div");
+        leads.className = "wp-seg";
+        for (const lead of LEAD_CHOICES) {
+          const b = document.createElement("button");
+          b.textContent = `${lead} min`;
+          b.classList.toggle("active", trigger.lead === lead);
+          b.addEventListener("click", () => {
+            setTrigger(name, { kind: "class", lead });
+            render();
+          });
+          leads.append(b);
+        }
+        box.append(leads);
+        break;
+      }
+    }
+
+    // ── this preset's own backdrop ──
+    const preset = presets.find((p) => p.name === name);
+    const wp = preset?.wallpaper ?? null;
+    const rule = document.createElement("div");
+    rule.className = "trigger-rule";
+    const wpHint = document.createElement("div");
+    wpHint.className = "trigger-hint";
+    wpHint.textContent = "Wallpaper";
+    const wpSeg = document.createElement("div");
+    wpSeg.className = "wp-seg";
+    for (const own of [false, true]) {
+      const b = document.createElement("button");
+      b.textContent = own ? "This preset" : "Board default";
+      b.classList.toggle("active", !!wp === own);
+      b.title = own
+        ? "Save the wallpaper showing now with this preset"
+        : "Use whatever wallpaper is set in the display menu";
+      b.addEventListener("click", () => {
+        // "This preset" freezes what is on screen right now — which is either
+        // the preset's own backdrop or the saved wallpaper, so clicking it
+        // without having set a wallpaper first is a no-op, not a surprise.
+        presets = withPresetWallpaper(presets, name, own ? presetWallpaper ?? wallpaperCfg : null);
+        persistPresets();
+        if (!own) applyPresetWallpaper(null);
+        render();
+      });
+      wpSeg.append(b);
+    }
+    box.append(rule, wpHint, wpSeg);
+    if (wp) {
+      const what = document.createElement("div");
+      what.className = "wp-path";
+      what.textContent = wp.source === "file" ? wp.path : `${wp.source} wallpaper`;
+      what.title = what.textContent;
+      what.style.direction = wp.source === "file" ? "rtl" : "ltr";
+      box.append(what);
+      const update = document.createElement("button");
+      update.className = "trigger-use";
+      update.textContent = "Update to the wallpaper showing now";
+      update.addEventListener("click", () => {
+        presets = withPresetWallpaper(presets, name, presetWallpaper ?? wallpaperCfg);
+        persistPresets();
+        render();
+      });
+      box.append(update);
+    }
+    return box;
+  };
+
   const render = () => {
     list.replaceChildren();
+    autoBtn.classList.toggle("active", automation.enabled);
+    const auto = autoState?.active ? autoState : null;
+    status.hidden = !auto;
+    if (auto) {
+      status.replaceChildren();
+      const text = document.createElement("span");
+      text.textContent = `${auto.active} · ${auto.reason ?? "active"}`;
+      const back = document.createElement("button");
+      back.textContent = "Restore";
+      back.title = "Put back the board from before the switch";
+      back.addEventListener("click", () => {
+        undoAutoSwitch();
+        render();
+      });
+      status.append(text, back);
+    }
+
     if (!presets.length) {
       const empty = document.createElement("div");
       empty.className = "preset-empty";
@@ -2188,15 +2555,20 @@ function initPresetMenu() {
       apply.title = `Apply "${preset.name}"`;
       if (preset.name === active) apply.classList.add("active");
       apply.addEventListener("click", () => {
-        layout = boardToLayout(preset.board, defaultLayout());
-        // A preset can go stale — a widget's size preset may have changed
-        // shape since it was saved — so it is normalized like any other
-        // layout before being shown.
-        normalizeLayout();
-        saveLayout();
-        applyLayout();
+        showBoard(preset);
         menu.hidden = true;
         closeNaming();
+      });
+      const trigger = automation.rules[preset.name];
+      const when = document.createElement("button");
+      when.className = "preset-trigger";
+      when.classList.toggle("set", !!trigger);
+      when.classList.toggle("open", editing === preset.name);
+      when.textContent = trigger ? `⚡ ${TRIGGER_LABELS[trigger.kind]}` : "⚡";
+      when.title = trigger ? "Change when this applies itself" : "Apply this automatically…";
+      when.addEventListener("click", () => {
+        editing = editing === preset.name ? null : preset.name;
+        render();
       });
       const del = document.createElement("button");
       del.className = "preset-del";
@@ -2206,12 +2578,26 @@ function initPresetMenu() {
       del.addEventListener("click", () => {
         presets = withoutPreset(presets, preset.name);
         persistPresets();
+        setTrigger(preset.name, null);
+        if (editing === preset.name) editing = null;
         render();
       });
-      row.append(apply, del);
+      row.append(apply, when, del);
       list.append(row);
+      if (editing === preset.name) list.append(triggerEditor(preset.name));
     }
   };
+  renderPresetMenu = () => {
+    // Never under the user's caret: an open app-name field would lose it.
+    if (!menu.hidden && !menu.contains(document.activeElement)) render();
+  };
+
+  autoBtn.addEventListener("click", () => {
+    automation.enabled = !automation.enabled;
+    persistAutomation();
+    autoTick();
+    render();
+  });
 
   saveBtn.addEventListener("click", () => {
     saveBtn.hidden = true;
@@ -2242,6 +2628,7 @@ function initPresetMenu() {
     document.getElementById("wallpaper-panel").hidden = true;
     if (menu.hidden) {
       closeNaming();
+      editing = null;
       render();
     }
     menu.hidden = !menu.hidden;
@@ -2254,6 +2641,171 @@ function initPresetMenu() {
     menu.hidden = true;
     closeNaming();
   });
+}
+
+/* ── auto-switching ─────────────────────────────────────────
+   Presets that apply themselves: a game takes focus and the Gaming board
+   comes up, the game closes and the board you had comes back. The timing
+   rules — enter/exit delays, ranking, standing down when you take the board
+   back — live in lib/automation.js; this feeds it signals and owns the board.
+
+   Signals: the focused app (screen-time tracker's "activity" event), GPU load
+   (the "gpu" event) and today's agenda (STAG + calendar). Ticks every 5 s. */
+
+const AUTO_KEY = "aria-automation";
+const AUTO_STATE_KEY = "aria-automation-state";
+const AUTO_TICK_MS = 5000;
+// How long after a click or keystroke in the HUD the app before it stands in.
+const HUD_INPUT_GRACE_MS = 30_000;
+let automation = { enabled: true, rules: {} };
+let autoState = null;
+// The board from before the first automatic switch; what "restore" puts back.
+let autoSnapshot = null;
+let focusedApp = null;
+// The last app other than ARIA to have focus, for the trigger editor.
+let lastFocusedApp = null;
+let hudInputAt = 0;
+let toastTimer = null;
+
+function persistAutomation() {
+  try {
+    localStorage.setItem(AUTO_KEY, JSON.stringify(automation));
+  } catch {}
+}
+
+function persistAutoState() {
+  try {
+    localStorage.setItem(
+      AUTO_STATE_KEY,
+      JSON.stringify({ active: autoState.active, suppressed: autoState.suppressed, snapshot: autoSnapshot }),
+    );
+  } catch {}
+}
+
+function initAutomation() {
+  try {
+    automation = parseAutomation(localStorage.getItem(AUTO_KEY));
+    if (localStorage.getItem(AUTO_KEY) === null) persistAutomation();
+  } catch {}
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(AUTO_STATE_KEY));
+  } catch {}
+  // A rule that was in charge when ARIA last closed is still in charge: it
+  // gets the full exit grace to see its trigger again before handing back.
+  autoState = initialState(saved, Date.now());
+  autoSnapshot = autoState.active && saved?.snapshot ? saved.snapshot : null;
+  if (!autoSnapshot) autoState.active = null;
+
+  document.getElementById("auto-toast-undo").addEventListener("click", () => {
+    undoAutoSwitch();
+    hideToast();
+  });
+  // Deliberate input only — hovering over the HUD is not working in it.
+  for (const ev of ["pointerdown", "keydown", "wheel"]) {
+    window.addEventListener(ev, () => (hudInputAt = Date.now()), { capture: true, passive: true });
+  }
+  setInterval(autoTick, AUTO_TICK_MS);
+}
+
+/**
+ * The focused app from the tracker.
+ *
+ * Working the HUD makes ARIA itself the focused app, which would read as "the
+ * game stopped" while you are in fact rearranging the board mid-session — so
+ * while you are clicking or typing here, the app before it stands in. Merely
+ * *holding* focus doesn't count: closing the last other window leaves focus on
+ * ARIA indefinitely, and a rule pinned to a stale name would never let go.
+ */
+function onActivity({ app }) {
+  const usingHud = document.hasFocus() && Date.now() - hudInputAt < HUD_INPUT_GRACE_MS;
+  if (usingHud) return;
+  if (app && !document.hasFocus()) lastFocusedApp = app; // the editor's suggestion
+  focusedApp = app ?? null;
+}
+
+function autoTick() {
+  if (!autoState) return;
+  const now = Date.now();
+  const signals = {
+    app: focusedApp,
+    gpu: gpuData && now - gpuAt < STALE_MS ? gpuData.gpu : null,
+    agenda: automationAgenda(stagData, calData, now),
+  };
+  const before = JSON.stringify([autoState.active, autoState.suppressed]);
+  const { state, action } = step(autoState, automation, presets.map((p) => p.name), signals, now);
+  autoState = state;
+
+  if (action?.type === "apply") {
+    const preset = presets.find((p) => p.name === action.preset);
+    if (preset) {
+      autoSnapshot ??= structuredClone(layout);
+      withAutoApplying(() => showBoard(preset));
+      showToast(`${preset.name} · ${action.reason}`, true);
+    }
+  } else if (action?.type === "restore") {
+    if (autoSnapshot) {
+      withAutoApplying(() => restoreSnapshot());
+      showToast("Board restored", false);
+    }
+    autoSnapshot = null;
+  }
+  if (action || JSON.stringify([autoState.active, autoState.suppressed]) !== before) {
+    persistAutoState();
+    renderPresetMenu();
+  }
+}
+
+function withAutoApplying(fn) {
+  autoApplying = true;
+  try {
+    fn();
+  } finally {
+    autoApplying = false;
+  }
+}
+
+function restoreSnapshot() {
+  layout = layoutFrom(autoSnapshot);
+  normalizeLayout();
+  saveLayout();
+  applyLayout();
+  // The board is the user's again, so the backdrop is the saved one again.
+  applyPresetWallpaper(null);
+}
+
+/** Put the pre-switch board back and keep the rule out until its trigger clears. */
+function undoAutoSwitch() {
+  if (!autoState?.active) return;
+  autoState = overridden(autoState);
+  if (autoSnapshot) withAutoApplying(() => restoreSnapshot());
+  autoSnapshot = null;
+  persistAutoState();
+}
+
+/**
+ * The user rearranged the board while a rule was in charge: theirs wins. The
+ * snapshot is dropped too — the board they just made is the one to keep.
+ */
+function boardChangedByHand() {
+  if (!autoState?.active) return;
+  autoState = overridden(autoState);
+  autoSnapshot = null;
+  persistAutoState();
+  hideToast();
+}
+
+function showToast(text, undoable) {
+  const toast = document.getElementById("auto-toast");
+  document.getElementById("auto-toast-text").textContent = text;
+  document.getElementById("auto-toast-undo").hidden = !undoable;
+  toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, undoable ? 8000 : 4000);
+}
+
+function hideToast() {
+  document.getElementById("auto-toast").hidden = true;
 }
 
 const THEME_NAMES = ["studio", "jarvis", "porcelain", "nord", "aurora", "scuderia", "terminal"];
@@ -2673,6 +3225,34 @@ function initWindowStateSaver() {
 // nothing to line up with, so it always cover-fits.
 
 let wallpaperCfg = null;
+// The backdrop the preset on the board brought with it, if it brought one.
+// Never saved as the wallpaper: it is worn, not adopted.
+let presetWallpaper = null;
+
+/**
+ * Wear a preset's backdrop, or `null` to go back to the saved wallpaper.
+ * Called whenever the board changes hands — a preset applied by click or by
+ * rule, an auto-switch restoring what was there before.
+ */
+async function applyPresetWallpaper(wallpaper) {
+  const next = sanitizeWallpaper(wallpaper);
+  if (JSON.stringify(next) === JSON.stringify(presetWallpaper)) return;
+  presetWallpaper = next;
+  try {
+    // Through Rust, which validates the path and grants asset access to it —
+    // the same gate a wallpaper the user picks goes through, without the save.
+    const shown = next
+      ? await window.__TAURI__.core.invoke("wallpaper_preview", { config: next })
+      : wallpaperCfg;
+    if (shown) await showWallpaper(shown);
+  } catch (e) {
+    // A preset whose image has since been moved or deleted must not leave the
+    // board without a backdrop.
+    presetWallpaper = null;
+    showWallpaperError(e?.message || e);
+    if (wallpaperCfg) await showWallpaper(wallpaperCfg);
+  }
+}
 
 async function setupWallpaper() {
   const { core } = window.__TAURI__;
@@ -2696,7 +3276,9 @@ function watchWallpaperSources() {
   const { event } = window.__TAURI__;
   try {
     event.listen("desktop-background", (e) => {
-      if (wallpaperCfg?.source === "desktop") setWallpaperMedia(e.payload, "image");
+      if ((presetWallpaper ?? wallpaperCfg)?.source === "desktop") {
+        setWallpaperMedia(e.payload, "image");
+      }
     });
   } catch {}
   // Stop decoding video while the window is minimised or fully occluded.
@@ -2728,7 +3310,7 @@ function showWallpaperError(message) {
  * loopback media server in wallpaper.rs, which is also what lets a large file
  * stream instead of being buffered whole.
  */
-async function setWallpaperMedia(src, kind) {
+async function setWallpaperMedia(src, kind, path) {
   const img = document.getElementById("wallpaper-img");
   const video = document.getElementById("wallpaper-video");
 
@@ -2747,7 +3329,8 @@ async function setWallpaperMedia(src, kind) {
   if (kind === "video") {
     img.hidden = true;
     img.removeAttribute("src");
-    const url = await window.__TAURI__.core.invoke("wallpaper_media_url");
+    // `path` serves a preset's own video; without it, the saved wallpaper's.
+    const url = await window.__TAURI__.core.invoke("wallpaper_media_url", { path: path ?? null });
     if (!url) throw new Error("could not serve the video file");
     // A codec the system can't decode fails here, not at invoke time — on
     // Linux H.264 needs gstreamer1.0-libav, which is not installed by default.
@@ -2768,10 +3351,20 @@ async function setWallpaperMedia(src, kind) {
 }
 
 
+/**
+ * Adopt `cfg` as *the* wallpaper — the one the settings panel edits and every
+ * launch starts from. What is actually on screen may still be a preset's own
+ * backdrop, which outranks it until that preset leaves the board.
+ */
 async function applyWallpaper(cfg) {
+  wallpaperCfg = cfg;
+  await showWallpaper(presetWallpaper ?? cfg);
+}
+
+/** Put a wallpaper config on screen, whoever it belongs to. */
+async function showWallpaper(cfg) {
   const { core } = window.__TAURI__;
   const root = document.documentElement;
-  wallpaperCfg = cfg;
 
   root.style.setProperty("--wallpaper-fit", cfg.fit || "cover");
   root.style.setProperty("--wallpaper-dim", String(cfg.dim ?? 0));
@@ -2785,7 +3378,7 @@ async function applyWallpaper(cfg) {
   video.loop = cfg.loop !== false;
 
   if (cfg.source === "file" && cfg.path) {
-    await setWallpaperMedia(core.convertFileSrc(cfg.path), cfg.kind);
+    await setWallpaperMedia(core.convertFileSrc(cfg.path), cfg.kind, cfg.path);
     return;
   }
   if (cfg.source === "desktop") {
@@ -2841,6 +3434,9 @@ function initWallpaperMenu() {
       const saved = await core.invoke("wallpaper_set", {
         config: { ...wallpaperCfg, ...patch },
       });
+      // Editing the wallpaper by hand is a choice about the wallpaper, so it
+      // takes the board's borrowed one off rather than being invisible.
+      presetWallpaper = null;
       await applyWallpaper(saved);
       sync();
     } catch (e) {
@@ -2946,7 +3542,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Before initLayout(): its applyLayout() calls syncTerminal(), which starts
   // the shell if the terminal is on the board.
   initTerminal();
+  initNotes(); // before initLayout(): applyLayout() re-renders the widget
   initLayout();
+  initAutomation(); // before initPresetMenu(): the menu shows its rules
   initPresetMenu(); // after initLayout(): reads the board it just built
   initGauges();
   initPinToggle();

@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   MAX_PRESETS,
+  sanitizeWallpaper,
   boardToLayout,
   matchingPreset,
   normalizeName,
@@ -108,4 +109,32 @@ test("matchingPreset names an exact match and nothing less", () => {
   moved.a.c = 8;
   assert.equal(matchingPreset(moved, presets), null);
   assert.equal(matchingPreset(board(), []), null);
+});
+
+test("a preset wallpaper is cleaned into the complete shape Rust expects", () => {
+  // The Rust config struct has no serde defaults, so anything short of every
+  // field is rejected at the IPC boundary and the preset silently shows the
+  // ordinary wallpaper instead.
+  const fields = ["source", "path", "kind", "fit", "dim", "blur", "muted", "loop"];
+  const file = sanitizeWallpaper({ source: "file", path: "/w.jpg", dim: 9, blur: 999, evil: 1 });
+  assert.deepEqual(Object.keys(file).sort(), [...fields].sort());
+  assert.deepEqual([file.dim, file.blur, file.fit, file.kind], [1, 60, "cover", "image"]);
+  assert.deepEqual(Object.keys(sanitizeWallpaper({ source: "desktop" })).sort(), [...fields].sort());
+
+  assert.equal(sanitizeWallpaper({ source: "file" }), null, "file with no path is unusable");
+  assert.equal(sanitizeWallpaper({ source: "nonsense" }), null);
+  assert.equal(sanitizeWallpaper(null), null);
+});
+
+test("a preset keeps its wallpaper when the board is re-saved", () => {
+  const wp = { source: "desktop", path: null, kind: "image", fit: "cover", dim: 0, blur: 0, muted: true, loop: true };
+  let list = withPreset([], "work", board(), widgets, wp);
+  assert.deepEqual(list[0].wallpaper, wp);
+  list = withPreset(list, "work", board(), widgets); // re-saved after a tweak
+  assert.deepEqual(list[0].wallpaper, wp);
+  list = withPreset(list, "work", board(), widgets, null); // asked for none
+  assert.equal("wallpaper" in list[0], false);
+  // and it survives a round trip through storage
+  const stored = parsePresets(JSON.stringify([{ name: "w", board: board(), wallpaper: wp }]), widgets);
+  assert.deepEqual(stored[0].wallpaper, wp);
 });

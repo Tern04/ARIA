@@ -22,6 +22,13 @@ struct ScreenTime {
     source: &'static str,
 }
 
+/// What has focus right now — the auto-switch rules' live signal.
+#[derive(Serialize, Clone)]
+struct Activity {
+    app: Option<String>,
+    idle: bool,
+}
+
 #[derive(Serialize, Clone)]
 struct AppTime {
     name: String,
@@ -76,11 +83,19 @@ pub fn spawn(app: AppHandle) {
                 yesterday_total = load_total(&app, &yesterday());
             }
 
-            if idle_seconds() < IDLE_LIMIT {
+            let idle = idle_seconds() >= IDLE_LIMIT;
+            let focused = frontmost_app(&app);
+            if !idle {
                 usage.total += TICK.as_secs();
-                if let Some(name) = frontmost_app(&app) {
-                    *usage.apps.entry(name).or_insert(0) += TICK.as_secs();
+                if let Some(name) = &focused {
+                    *usage.apps.entry(name.clone()).or_insert(0) += TICK.as_secs();
                 }
+            }
+            // Every tick, not only on change: the board's auto-switch rules
+            // time their own enter/exit delays and need a steady clock, and a
+            // listener registered after a change would otherwise wait forever.
+            if let Err(e) = app.emit("activity", Activity { app: focused, idle }) {
+                eprintln!("activity emit failed: {e}");
             }
 
             if tick % 3 == 0 {

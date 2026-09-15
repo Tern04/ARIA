@@ -9,6 +9,7 @@ import {
   boardToLayout,
   sanitizeBoard,
 } from "../src/lib/presets.js";
+import { sanitizeTrigger } from "../src/lib/automation.js";
 
 const entries = Object.entries(WIDGETS);
 
@@ -100,19 +101,38 @@ test("a shipped preset is seeded once per version, and a deleted one stays gone"
   const first = applyBuiltins([], null, WIDGETS);
   assert.deepEqual(
     first.presets.map((p) => p.name),
-    [name],
+    BUILTIN_PRESETS.map((p) => p.name),
   );
   assert.equal(first.seeded[name], version);
 
   // Deleted at the version it was seeded at: it must not come back.
   const afterDelete = applyBuiltins([], JSON.stringify(first.seeded), WIDGETS);
   assert.deepEqual(afterDelete.presets, []);
+  assert.deepEqual(afterDelete.triggers, {}, "and neither does its trigger");
 
   // A revision does come back, replacing the stale copy rather than doubling it.
   const stale = [{ name, board: { gpu: { c: 1, r: 1, size: "s", hidden: false } } }];
-  const revised = applyBuiltins(stale, JSON.stringify({ [name]: version - 1 }), WIDGETS);
+  const seededOthers = { ...first.seeded, [name]: version - 1 };
+  const revised = applyBuiltins(stale, JSON.stringify(seededOthers), WIDGETS);
   assert.equal(revised.presets.length, 1);
   assert.equal(revised.presets[0].board.gpu.size, BUILTIN_PRESETS[0].board.gpu.size);
+});
+
+test("a shipped preset brings its auto-switch trigger with it", () => {
+  const seeded = applyBuiltins([], null, WIDGETS);
+  for (const builtin of BUILTIN_PRESETS) {
+    if (!builtin.trigger) continue;
+    assert.deepEqual(
+      seeded.triggers[builtin.name],
+      builtin.trigger,
+      `${builtin.name} did not carry its trigger`,
+    );
+    assert.deepEqual(
+      sanitizeTrigger(builtin.trigger),
+      builtin.trigger,
+      `${builtin.name}'s trigger is not a valid one`,
+    );
+  }
 });
 
 test("seeding never evicts a preset the user saved", () => {

@@ -234,6 +234,169 @@
   background: rgba(229, 123, 99, 0.12);
 }
 
+/* Room for the trigger editor's five-way segmented control. */
+.preset-menu {
+  width: 264px;
+}
+
+.preset-row .preset-trigger {
+  flex: none;
+  padding: 6px 7px;
+  font-size: 0.7rem;
+  color: rgba(201, 204, 211, 0.3);
+}
+
+.preset-row .preset-trigger.set {
+  color: #e8ac53;
+}
+
+.preset-row .preset-trigger.open,
+.preset-row .preset-trigger:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.trigger-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 2px 0 6px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+}
+
+.trigger-editor .wp-seg button {
+  padding: 5px 2px;
+  font-size: 0.7rem;
+}
+
+.trigger-hint {
+  font: 400 0.72rem/1.35 "Inter", system-ui, sans-serif;
+  color: rgba(201, 204, 211, 0.6);
+}
+
+.trigger-apps {
+  width: 100%;
+  padding: 6px 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 7px;
+  font: 500 0.78rem/1 "JetBrains Mono", ui-monospace, monospace;
+  color: #eceae3;
+}
+
+.trigger-apps:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.34);
+}
+
+.trigger-rule {
+  height: 1px;
+  margin: 1px 0;
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.trigger-editor .wp-path {
+  margin-top: -2px;
+}
+
+.theme-menu button.trigger-use {
+  align-self: flex-start;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  color: rgba(201, 204, 211, 0.75);
+}
+
+.preset-menu .auto-toggle {
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0 0 7px 7px;
+}
+
+.auto-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 2px 10px;
+  font: 400 0.72rem/1.3 "Inter", system-ui, sans-serif;
+  color: #e8ac53;
+}
+
+.auto-status[hidden] {
+  display: none;
+}
+
+.auto-status span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.theme-menu .auto-status button {
+  flex: none;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+}
+
+/* ── auto-switch toast ─────────────────────────────────────── */
+
+.auto-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: calc(100vw - 32px);
+  padding: 9px 10px 9px 16px;
+  transform: translateX(-50%);
+  background: rgba(18, 20, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  font: 500 0.82rem/1.2 "Inter", system-ui, sans-serif;
+  color: #eceae3;
+}
+
+.auto-toast[hidden] {
+  display: none;
+}
+
+.auto-toast-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.auto-toast-text::before {
+  content: "⚡ ";
+  color: #e8ac53;
+}
+
+.auto-toast button {
+  flex: none;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  border-radius: 7px;
+  font: inherit;
+  color: #fff;
+  cursor: pointer;
+}
+
+.auto-toast button:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.auto-toast button[hidden] {
+  display: none;
+}
+
 .preset-empty {
   padding: 7px 10px 9px;
   font: 400 0.74rem/1.35 "Inter", system-ui, sans-serif;
@@ -487,7 +650,8 @@ body.editing .win-resize {
 .widget--screentime[data-size="s"] .widget-body,
 .widget--email[data-size="s"] .widget-body,
 .widget--stag[data-size="s"] .widget-body,
-.widget--music[data-size="s"] .widget-body {
+.widget--music[data-size="s"] .widget-body,
+.widget--notes[data-size="s"] .widget-body {
   align-items: center;
   text-align: center;
 }
@@ -633,6 +797,179 @@ body.editing .win-resize {
 .st-delta {
   font: 400 0.72rem/1.4 "Inter", system-ui, sans-serif;
   opacity: 0.55;
+}
+
+/* ── NOTES widget ───────────────────────────────────────────
+   Deliberately built from currentColor and theme variables (with fallbacks
+   for JARVIS, which names its variables --color-*), so the list takes on
+   whatever theme is loaded instead of needing a block in each one. */
+
+.note-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  gap: var(--fill-gap);
+  overflow: hidden;
+}
+
+.note-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.note-check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.45;
+  font-size: 0.6rem;
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.note-check:hover {
+  opacity: 0.9;
+}
+
+.note-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.8rem;
+}
+
+.note-row.is-pinned .note-check {
+  color: var(--accent, var(--color-accent, currentColor));
+  opacity: 0.9;
+}
+
+.note-row.is-done {
+  opacity: 0.4;
+}
+
+.note-row.is-done .note-text {
+  text-decoration: line-through;
+}
+
+.note-due {
+  flex: none;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(128, 128, 128, 0.16);
+  font: 500 0.66rem/1 "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.75;
+}
+
+.note-due.is-soon {
+  color: var(--warn, var(--color-warn, var(--accent, #e8ac53)));
+  opacity: 1;
+}
+
+.note-due.is-overdue {
+  color: var(--alert, var(--color-warn, #e57b63));
+  opacity: 1;
+}
+
+.note-del {
+  flex: none;
+  padding: 0 2px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  opacity: 0;
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.note-row:hover .note-del {
+  opacity: 0.45;
+}
+
+.note-del:hover {
+  opacity: 1;
+}
+
+.note-empty,
+.note-more {
+  font-size: 0.72rem;
+  opacity: 0.45;
+  line-height: 1.35;
+}
+
+.note-new[hidden] {
+  display: none;
+}
+
+.note-new input {
+  width: 100%;
+  padding: 6px 9px;
+  background: var(--bg-inset, rgba(128, 128, 128, 0.1));
+  border: 1px solid var(--border, var(--color-border, rgba(128, 128, 128, 0.25)));
+  border-radius: 7px;
+  font: 400 0.76rem/1 "Inter", system-ui, sans-serif;
+  color: inherit;
+}
+
+.note-new input:focus {
+  outline: none;
+  border-color: var(--accent, var(--color-accent, currentColor));
+}
+
+.note-new input::placeholder {
+  opacity: 0.4;
+}
+
+/* Small: the count is the content, so it gets the headline treatment the
+   other glanceable widgets use. */
+.note-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.note-count {
+  font-family: var(--font-display, inherit);
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.note-count-label,
+.note-next {
+  font-size: 0.72rem;
+  opacity: 0.55;
+}
+
+.note-next {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.note-next.is-soon {
+  color: var(--warn, var(--color-warn, var(--accent, #e8ac53)));
+  opacity: 1;
+}
+
+.note-next.is-overdue {
+  color: var(--alert, var(--color-warn, #e57b63));
+  opacity: 1;
 }
 
 /* ── GITHUB widget ──────────────────────────────────────────

@@ -53,6 +53,7 @@ pub fn run() {
             window::place_on_monitor,
             wallpaper::wallpaper_config,
             wallpaper::wallpaper_set,
+            wallpaper::wallpaper_preview,
             wallpaper::wallpaper_media_url,
             terminal::term_open,
             terminal::term_write,

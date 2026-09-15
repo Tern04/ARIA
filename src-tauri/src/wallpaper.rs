@@ -403,8 +403,18 @@ pub fn wallpaper_config(app: AppHandle) -> WallpaperConfig {
 
 /// URL the `<video>` element should load, or None when the wallpaper isn't a
 /// video. See the module docs for why this isn't just the asset protocol.
+/// `path` serves a preset's own video instead of the saved wallpaper's; it is
+/// held to the same rules — a real file, with a video extension.
 #[tauri::command]
-pub fn wallpaper_media_url(app: AppHandle) -> Option<String> {
+pub fn wallpaper_media_url(app: AppHandle, path: Option<String>) -> Option<String> {
+    if let Some(path) = path {
+        let p = PathBuf::from(path);
+        if !p.is_file() || kind_of(&p) != Kind::Video {
+            server::clear();
+            return None;
+        }
+        return server::serve(&p);
+    }
     let cfg = load(&app);
     if cfg.source != Source::File || cfg.kind != Kind::Video {
         server::clear();
@@ -413,8 +423,9 @@ pub fn wallpaper_media_url(app: AppHandle) -> Option<String> {
     server::serve(Path::new(cfg.path.as_deref()?))
 }
 
-#[tauri::command]
-pub fn wallpaper_set(app: AppHandle, config: WallpaperConfig) -> Result<WallpaperConfig, String> {
+/// Validate a config and make its file readable by the webview, without
+/// storing it as *the* wallpaper. Shared by `wallpaper_set` and the preview.
+fn prepare(app: &AppHandle, config: WallpaperConfig) -> Result<WallpaperConfig, String> {
     let mut cfg = config.sanitize();
     if cfg.source == Source::File {
         let path = cfg.path.clone().unwrap_or_default();
@@ -423,9 +434,25 @@ pub fn wallpaper_set(app: AppHandle, config: WallpaperConfig) -> Result<Wallpape
         }
         cfg.kind = kind_of(Path::new(&path));
     }
-    allow(&app, &cfg);
+    allow(app, &cfg);
+    Ok(cfg)
+}
+
+#[tauri::command]
+pub fn wallpaper_set(app: AppHandle, config: WallpaperConfig) -> Result<WallpaperConfig, String> {
+    let cfg = prepare(&app, config)?;
     save(&app, &cfg)?;
     Ok(cfg)
+}
+
+/// Show a wallpaper without adopting it: a board preset can carry its own
+/// backdrop, which is worn while that preset is on the board and taken off
+/// again afterwards. The saved wallpaper — the one the settings panel edits
+/// and the one every launch starts from — is deliberately left alone, so the
+/// backdrop a preset borrows can never become the one the user has to undo.
+#[tauri::command]
+pub fn wallpaper_preview(app: AppHandle, config: WallpaperConfig) -> Result<WallpaperConfig, String> {
+    prepare(&app, config)
 }
 
 #[cfg(test)]
