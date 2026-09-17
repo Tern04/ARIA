@@ -149,6 +149,19 @@ fn load_total(app: &AppHandle, day: &str) -> Option<u64> {
     Some(load_day(app, day)?.total)
 }
 
+/// One day's screen time as `(total seconds, apps by time)` — what the
+/// history report needs to say what the machine was used *for*. Today's file
+/// is written every minute, so it lags by at most that.
+pub fn day_totals(app: &AppHandle, day: &str) -> (Option<u64>, Vec<(String, u64)>) {
+    let Some(usage) = load_day(app, day) else {
+        return (None, Vec::new());
+    };
+    let mut apps: Vec<(String, u64)> = usage.apps.into_iter().collect();
+    apps.sort_by(|a, b| b.1.cmp(&a.1));
+    apps.truncate(TOP_APPS);
+    (Some(usage.total), apps)
+}
+
 fn day_file(app: &AppHandle, day: &str) -> Option<PathBuf> {
     let dir = app.path().app_data_dir().ok()?.join("screentime");
     std::fs::create_dir_all(&dir).ok()?;

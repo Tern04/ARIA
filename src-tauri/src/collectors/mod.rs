@@ -4,6 +4,7 @@ pub mod discord;
 pub mod email;
 pub mod github;
 mod hardware;
+pub mod history;
 pub mod latency;
 pub mod music;
 mod screentime;
@@ -205,6 +206,9 @@ pub fn spawn_all(app: &AppHandle) {
     hardware::spawn(app.clone());
     latency::spawn(app.clone());
     screentime::spawn(app.clone());
+    // After the collectors it records: it writes down whatever they last
+    // reported, so it wants them running first.
+    history::spawn(app.clone());
     music::spawn(app.clone());
     github::spawn(app.clone(), rx.clone());
     crypto::spawn(app.clone(), rx.clone());

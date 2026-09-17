@@ -3,6 +3,7 @@ import { progressAt } from "./lib/music.js";
 import { HISTORY_LEN, autoScale, latest, peak, pushSample, seriesPaths } from "./lib/history.js";
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import { WIDGETS, defaultLayout } from "./lib/widgets.js";
+import { MIN_DAYS, anomalies, coverage, fmtHours, trends, week } from "./lib/insights.js";
 import {
   addNote,
   dueLabel,
@@ -1122,6 +1123,164 @@ function renderScreentime() {
   body.append(list);
 }
 
+/* ── TRENDS widget ──────────────────────────────────────────
+   The only widget that looks backwards. Every other one reports what is
+   happening now; this one reports what is *unusual* about it, which needs the
+   record history.rs keeps and the comparisons in lib/insights.js.
+
+   It reads a file on disk rather than a live collector, so it polls on its own
+   instead of listening for an event, and it only ever pulls the aggregates —
+   the day files themselves stay in Rust. */
+
+const TRENDS_DAYS = 7;
+// The record gains one sample a minute; five minutes is far inside the rate at
+// which anything it says could change.
+const TRENDS_POLL_MS = 5 * 60_000;
+// The report, or null before the first one has come back.
+let trendsDays = null;
+let trendsFailed = false;
+
+async function loadTrends() {
+  try {
+    trendsDays = await window.__TAURI__.core.invoke("history_report", { days: TRENDS_DAYS });
+    trendsFailed = false;
+  } catch (e) {
+    console.error("history_report failed:", e);
+    trendsFailed = true;
+  }
+  renderTrends();
+}
+
+/** Level → the colour convention the telemetry widgets already use. An info
+    finding gets no class: it is news, not a warning. */
+const TREND_LEVEL = { alert: "is-hot", warn: "is-warm" };
+
+function renderTrends() {
+  const widget = document.getElementById("widget-trends");
+  const body = widget.querySelector(".widget-body");
+  // A failed read with nothing to fall back on is the only reason to say so.
+  // A failure on top of a report we already have is not worth reporting: the
+  // record is of the past, so the last one is still true.
+  if (trendsFailed && trendsDays === null) {
+    body.replaceChildren();
+    const off = document.createElement("span");
+    off.className = "disconnected";
+    off.textContent = "no record";
+    body.append(off);
+    return;
+  }
+  // Leave the "no record yet" placeholder alone until there is something.
+  if (trendsDays === null) return;
+  const size = widget.dataset.size;
+  body.replaceChildren();
+
+  const found = anomalies(trendsDays);
+  const { days, ready } = coverage(trendsDays);
+  const worst = found[0] ?? null;
+  widget.classList.toggle("is-hot", worst?.level === "alert");
+  widget.classList.toggle("is-warm", worst?.level === "warn");
+
+  const head = document.createElement("div");
+  head.className = "tr-head";
+  if (!ready) {
+    // Days 1 and 2 have nothing to be compared against. Saying so is the
+    // difference between a widget that is working and one that looks broken.
+    head.classList.add("tr-quiet");
+    head.textContent = days
+      ? `building a baseline — day ${days} of ${MIN_DAYS + 1}`
+      : "no record yet — collecting";
+  } else if (worst) {
+    if (TREND_LEVEL[worst.level]) head.classList.add(TREND_LEVEL[worst.level]);
+    head.textContent = worst.text;
+  } else {
+    head.classList.add("tr-quiet");
+    head.textContent = `nothing unusual · ${days} days on record`;
+  }
+  body.append(head);
+
+  // The headline's "why", and anything else worth saying under it.
+  if (ready && worst) {
+    const detail = document.createElement("div");
+    detail.className = "tr-detail";
+    detail.textContent = worst.detail;
+    body.append(detail);
+    if (size === "l" && found.length > 1) {
+      for (const extra of found.slice(1, 3)) {
+        const more = document.createElement("div");
+        more.className = `tr-detail ${TREND_LEVEL[extra.level] ?? ""}`;
+        more.textContent = extra.text;
+        body.append(more);
+      }
+    }
+  }
+
+  // Today against the usual, one row per metric this machine reports.
+  const rows = trends(trendsDays);
+  if (rows.length) {
+    const list = document.createElement("div");
+    list.className = "tr-rows fill-list";
+    for (const row of rows) {
+      const el = document.createElement("div");
+      el.className = "tr-row";
+      const label = document.createElement("span");
+      label.className = "tr-label";
+      label.textContent = row.label;
+      const now = document.createElement("span");
+      now.className = "tr-now";
+      now.textContent = row.text;
+      const usual = document.createElement("span");
+      usual.className = "tr-usual";
+      // A delta under 1% of the usual is noise dressed up as a number.
+      const moved = Math.abs(row.delta) > Math.abs(row.was) * 0.01;
+      usual.textContent = moved
+        ? `${row.delta > 0 ? "▲" : "▼"} ${row.usual}`
+        : `= ${row.usual}`;
+      usual.classList.toggle("tr-up", moved && row.delta > 0);
+      el.append(label, now, usual);
+      list.append(el);
+    }
+    body.append(list);
+  }
+
+  if (size !== "l") return;
+
+  // The week: one bar per day of screen time, and what the time went on.
+  const { bars, apps, total } = week(trendsDays, TRENDS_DAYS);
+  if (bars.length) {
+    const chart = document.createElement("div");
+    chart.className = "tr-week";
+    for (const bar of bars) {
+      const col = document.createElement("div");
+      col.className = "tr-bar";
+      col.title = `${bar.label} — ${fmtHours(bar.secs)}`;
+      const fill = document.createElement("div");
+      fill.className = "tr-bar-fill";
+      // A day that was on but barely used still gets a visible sliver.
+      fill.style.height = `${Math.max(2, bar.share * 100)}%`;
+      const day = document.createElement("span");
+      day.className = "tr-bar-day";
+      day.textContent = bar.label.slice(0, 1);
+      col.append(fill, day);
+      chart.append(col);
+    }
+    body.append(chart);
+  }
+  if (apps.length) {
+    const top = document.createElement("div");
+    top.className = "tr-apps";
+    top.textContent = `${fmtHours(total)} this week · ${apps
+      .slice(0, 3)
+      .map((a) => a.name)
+      .join(", ")}`;
+    body.append(top);
+  }
+}
+
+function initTrends() {
+  loadTrends();
+  setInterval(loadTrends, TRENDS_POLL_MS);
+}
+
 let musicData = null;
 let musicSampledAt = 0; // wall clock of the last sample, for local advance
 
@@ -2132,6 +2291,7 @@ function applyLayout() {
   renderEmail();
   renderStag();
   renderScreentime();
+  renderTrends();
   renderMusic();
   renderCalendar();
   renderGpu();
@@ -3644,6 +3804,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   initPinToggle();
   initMusicControls();
   initTelemetry();
+  initTrends(); // reads the record on disk, so it polls rather than listens
   await initCollectors();
   // All listeners are now registered; let gated collectors start emitting.
   window.__TAURI__.core.invoke("frontend_ready");

@@ -81,7 +81,9 @@ pub fn spawn(app: AppHandle) {
                 history.pop_front();
             }
             history.push_back(sample);
-            if let Err(e) = app.emit("latency", summarize(&host, &history)) {
+            let summary = summarize(&host, &history);
+            super::history::note_ping(summary.last_ms, Some(summary.loss_pct));
+            if let Err(e) = app.emit("latency", summary) {
                 eprintln!("latency emit failed: {e}");
             }
             tokio::time::sleep(POLL).await;

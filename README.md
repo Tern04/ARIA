@@ -22,12 +22,13 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 | THERMALS | CPU / GPU / drive temperatures on colour-banded meters, GPU fan and CPU clock | `sysinfo` components (hwmon / SMC / WMI) + `nvidia-smi` |
 | PERF | CPU, GPU, RAM and VRAM over the last three minutes, current value and peak per trace | The same collectors, sampled on one clock |
 | PING | Round trip to any host, with jitter, packet loss and a 90 s trace | System `ping`, one packet every 3 s |
+| TRENDS | What today looks like next to the days before it: the one thing worth saying, today-vs-usual rows, and the week's screen time at L | A local record — one sample a minute, one file a day, 30 days |
 
 ## The board
 
 - 12×6 grid; every widget has S/M/L size presets and adapts its content to the size.
 - **Every preset is 3, 6 or 12 columns wide** — a third, a half or the whole board — so any mix of widgets tiles without leaving slivers no other widget fits. Heights are free and just stack. S is `[3,1]` (one-line headline), M is `[3,2]` (the standard tile), L is `[6,3]` (double-wide feature). STAG and TERMINAL are the only exceptions, and only on width: a five-day timetable and an 80-column shell do not fit in a third of the board. They share a footprint — `[6,4]` and `[12,4]` — so they sit level beside each other, and an L of either leaves the bottom two rows for a strip of widgets to still glance at.
-- The default board fills all 72 cells exactly; SCREEN TIME, CALENDAR and the four telemetry widgets (GPU, THERMALS, PERF, PING) start in the tray. `npm test` checks that it still tiles.
+- The default board fills all 72 cells exactly; SCREEN TIME, CALENDAR, TRENDS and the four telemetry widgets (GPU, THERMALS, PERF, PING) start in the tray. `npm test` checks that it still tiles.
 - Three boards ship with the app, each with an auto-switch trigger already set: **Gaming** (GPU and PERF across the top half, THERMALS / SYSTEM / NOW PLAYING / PING under them, the rest as a bottom strip), **Coding** (the shell at half width beside GITHUB, NOTES and the telemetry pair, with the everyday strip below) and **Study** (the timetable beside CALENDAR and NOTES, MAIL and GITHUB under them, and no telemetry at all). They are seeded into the preset list once; delete one and it stays deleted, and none is ever added over a full preset list. If you delete one by accident, a **↺ Restore** row appears at the bottom of the preset menu and puts it back — board, trigger and rank — until the list is full.
 - Pencil button → edit mode: drag to move, cycle sizes, hide widgets into a tray, reset layout. Layout persists locally.
 - Grid button → **board presets**: name and save the current arrangement, then switch between them in a click. A preset stores the board (position, size, hidden) and, if you give it one, its own wallpaper; a widget added after the preset was saved arrives at its default spot rather than vanishing. Up to 8, kept in `localStorage`; the tick marks the preset the board currently matches exactly. **▲** moves a preset up the list, which is also its auto-switch priority, and **×** asks once before it deletes.
@@ -39,6 +40,18 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 - Seven themes (menu in the header): **Studio** (warm glass console), **JARVIS** (sci-fi cyan), **Porcelain** (light), **Nord** (arctic frost), **Aurora** (northern lights), **Scuderia** (Formula 1 rosso), **Terminal** (phosphor green).
 - On macOS and Windows the HUD is click-through so it never steals input: hold **⌥ Option** / **Alt** to interact with it (buttons, chips, edit mode). On **Linux** there is no gate — the HUD is always interactive, so the hint isn't shown. The pin button flips it above all windows temporarily.
 - **Wallpaper** (display menu → *Wallpaper…*): pick any image or video as the HUD's backdrop, with fit, dim and blur. On Linux the default is your real desktop wallpaper (the window has to be opaque there — see the WebKitGTK note below); elsewhere the default is none, and setting one makes the window opaque behind the glass. Video is muted and looping, and pauses while the window is hidden.
+
+## Trends
+
+Every other widget answers *what is happening*. TRENDS answers *whether that is normal* — which needs a record, so ARIA keeps one: a sample a minute of whatever the collectors last reported, one JSON file a day under the app data dir, thirty days, then deleted. A full day is about 200 KB, so the whole window is around 6 MB; `cargo test` keeps a guard on that. Nothing is polled twice and nothing leaves the machine — the collectors hand their latest reading to the recorder as they emit, so a metric your machine does not publish is simply absent from the record instead of being written down as a zero.
+
+The point is not daily averages, which only ever tell you today was busier. It is comparing like with like:
+
+- **GPU temperature per 10 % load bucket.** A card at 90 % load is hotter than one at 10 %, so heat is only news inside a bucket — "8 °C hotter than usual at 90–100 % load" is a real claim about dust, a fan or the room, and it is the one the widget leads with.
+- **Ping per hour of day.** An evening that is always slow is not a story; an evening at three times its own normal is.
+- **CPU peak against the usual peak**, packet loss against what this connection normally drops, and screen time — only ever as *"already past your usual day"*, never as a finished day against finished ones.
+
+Every check has a minimum number of samples on both sides and stays quiet below it, so the widget says "building a baseline — day 2 of 3" rather than inventing a verdict from one day. Days the machine was off are absent from the record, not counted as zero, so a weekend away does not make Monday look excessive. The comparisons are pure functions in `src/lib/insights.js` and unit-tested (`npm test`); the record and its aggregates are in `src-tauri/src/collectors/history.rs`.
 
 ## Terminal
 
@@ -205,6 +218,7 @@ No setup; CoinGecko's free API.
 | `discord.json` | app config dir¹ | server IDs + friends list (managed by the widget, hand-editable) |
 | `discord-popularity.json` | app data dir¹ | per-channel person-minute tallies |
 | `screentime/` | app data dir¹ | daily usage JSONs |
+| `history/` | app data dir¹ | one day of samples per file, 30-day retention, for TRENDS |
 | layout / theme | `localStorage` | board arrangement, saved board presets, chosen theme, terminal font size |
 
 ¹ macOS: `~/Library/Application Support/com.aria.desktop/` — Windows/Linux use the platform-standard config/data dirs.

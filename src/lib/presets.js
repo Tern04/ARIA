@@ -27,6 +27,12 @@ export const MAX_NAME = 24;
  * `version` is what lets a shipped preset be revised: it is seeded again when
  * its version has moved on, and never otherwise — so a preset deleted at the
  * version it was seeded at stays deleted.
+ *
+ * Adding a widget that is hidden in every board — TRENDS, say — is not a
+ * revision and must not bump the version: a stored copy that predates it
+ * resolves the missing entry from the default board, which has it hidden too,
+ * so the boards are identical either way. Re-seeding would only overwrite
+ * whatever the user had rearranged.
  */
 export const BUILTIN_PRESETS = [
   {
@@ -51,6 +57,7 @@ export const BUILTIN_PRESETS = [
       terminal:   { c: 7, r: 1, size: "m", hidden: true },
       calendar:   { c: 1, r: 1, size: "m", hidden: true },
       notes:      { c: 1, r: 1, size: "m", hidden: true },
+      trends:     { c: 1, r: 1, size: "m", hidden: true },
     },
   },
   {
@@ -76,6 +83,7 @@ export const BUILTIN_PRESETS = [
       calendar:   { c: 1, r: 1, size: "m", hidden: true },
       gpu:        { c: 1, r: 1, size: "m", hidden: true },
       screentime: { c: 1, r: 1, size: "s", hidden: true },
+      trends:     { c: 1, r: 1, size: "m", hidden: true },
     },
   },
   {
@@ -101,6 +109,7 @@ export const BUILTIN_PRESETS = [
       gpu:        { c: 1, r: 1, size: "m", hidden: true },
       thermals:   { c: 1, r: 1, size: "m", hidden: true },
       perf:       { c: 1, r: 1, size: "m", hidden: true },
+      trends:     { c: 1, r: 1, size: "m", hidden: true },
     },
   },
 ];

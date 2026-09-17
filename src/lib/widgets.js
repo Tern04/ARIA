@@ -50,6 +50,9 @@ export const WIDGETS = {
   perf:       { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
   latency:    { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
   notes:      { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
+  // The one widget that looks backwards: what today is like next to the days
+  // before it. Same footprint as SCREEN TIME, which it reads alongside.
+  trends:     { sizes: { s: [3, 1], m: [3, 2], l: [6, 3] }, home: [1, 1, "m"], defaultHidden: true },
 };
 
 /** A fresh board: every widget at its home cell and size. */
