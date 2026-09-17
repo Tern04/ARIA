@@ -14,11 +14,15 @@ import {
   toggleNote,
 } from "./lib/notes.js";
 import {
+  MAX_PRESETS,
   applyBuiltins,
   boardToLayout,
   matchingPreset,
+  missingBuiltins,
   normalizeName,
   parsePresets,
+  promotePreset,
+  restoreBuiltins,
   sanitizeWallpaper,
   withPreset,
   withPresetWallpaper,
@@ -2307,6 +2311,8 @@ function initLayout() {
 
 const PRESETS_KEY = "aria-presets";
 const SEEDED_KEY = "aria-presets-seeded";
+// How long a delete stays armed before it forgets it was ever asked.
+const ARM_MS = 4000;
 let presets = [];
 // Re-renders the preset menu when it is open; set by initPresetMenu().
 let renderPresetMenu = () => {};
@@ -2344,15 +2350,22 @@ function initPresetMenu() {
   const status = document.getElementById("auto-status");
   // The preset whose trigger editor is open, if any.
   let editing = null;
+  // The preset whose delete is armed, and the timer that disarms it. Deleting
+  // takes a board, its trigger and its backdrop with it, and for a shipped one
+  // it used to be final — too much for a single click on a small × sitting
+  // next to the trigger button, which is how the Gaming board went missing.
+  let arming = null;
+  let armTimer = null;
 
-  try {
-    const stored = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
-    // The shipped presets are seeded per version, so one the user deletes stays
-    // deleted while a revised one still reaches a board that has the old copy.
-    const seeding = applyBuiltins(stored, localStorage.getItem(SEEDED_KEY), WIDGETS);
+  // Fold a seeding result into the list, the record of what has been seeded,
+  // and the rules. Shared by startup and by the restore row, so a restored
+  // preset arrives exactly as a seeded one does.
+  const adopt = (seeding, stored) => {
     presets = seeding.presets;
     if (presets !== stored) persistPresets();
-    localStorage.setItem(SEEDED_KEY, JSON.stringify(seeding.seeded));
+    try {
+      localStorage.setItem(SEEDED_KEY, JSON.stringify(seeding.seeded));
+    } catch {}
     // A shipped preset brings its trigger with it, but never over one that is
     // already there: that one is the user's.
     let seededRule = false;
@@ -2364,11 +2377,26 @@ function initPresetMenu() {
       seededRule = true;
     }
     if (seededRule) persistAutomation();
+  };
+
+  try {
+    const stored = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
+    // The shipped presets are seeded per version, so one the user deletes stays
+    // deleted while a revised one still reaches a board that has the old copy.
+    adopt(applyBuiltins(stored, localStorage.getItem(SEEDED_KEY), WIDGETS), stored);
     // A preset with its own backdrop keeps it across launches: if the board
     // still is that preset, wear it again.
     const onBoard = presets.find((p) => p.name === matchingPreset(layout, presets));
     if (onBoard?.wallpaper) applyPresetWallpaper(onBoard.wallpaper);
   } catch {}
+
+  /** Take the delete back out of its armed state. Returns true if it was in one. */
+  const disarm = () => {
+    clearTimeout(armTimer);
+    const was = arming !== null;
+    arming = null;
+    return was;
+  };
 
   const closeNaming = () => {
     form.hidden = true;
@@ -2538,14 +2566,33 @@ function initPresetMenu() {
       empty.className = "preset-empty";
       empty.textContent = "No presets yet. Arrange the board, then save it.";
       list.append(empty);
-      return;
+      // Falls through to the restore row: an empty list is exactly when the
+      // shipped boards are most worth offering back.
     }
     // Marked active only on an exact match, so the tick means "the board is
     // this preset" rather than "this is the one you last clicked".
     const active = matchingPreset(layout, presets);
-    for (const preset of presets) {
+    for (const [at, preset] of presets.entries()) {
       const row = document.createElement("div");
       row.className = "preset-row";
+      // The list is the priority order, so moving a preset up is the only way
+      // to say "this board wins": a game should take the board from a lecture
+      // and not the reverse. Left of the label, well away from the delete.
+      const up = document.createElement("button");
+      up.className = "preset-up";
+      up.textContent = "▲";
+      up.disabled = at === 0;
+      up.title =
+        at === 0
+          ? `"${preset.name}" already outranks the others`
+          : `Move "${preset.name}" up — the higher board wins when two triggers fire at once`;
+      up.setAttribute("aria-label", `Move preset ${preset.name} up`);
+      up.addEventListener("click", () => {
+        disarm();
+        presets = promotePreset(presets, preset.name);
+        persistPresets();
+        render();
+      });
       const apply = document.createElement("button");
       apply.className = "preset-apply";
       const label = document.createElement("span");
@@ -2555,6 +2602,7 @@ function initPresetMenu() {
       apply.title = `Apply "${preset.name}"`;
       if (preset.name === active) apply.classList.add("active");
       apply.addEventListener("click", () => {
+        disarm();
         showBoard(preset);
         menu.hidden = true;
         closeNaming();
@@ -2567,25 +2615,68 @@ function initPresetMenu() {
       when.textContent = trigger ? `⚡ ${TRIGGER_LABELS[trigger.kind]}` : "⚡";
       when.title = trigger ? "Change when this applies itself" : "Apply this automatically…";
       when.addEventListener("click", () => {
+        // The × is the next target along, so a miss lands here: disarm it.
+        disarm();
         editing = editing === preset.name ? null : preset.name;
         render();
       });
+      // Two clicks, not one: the first arms, the second deletes, and anything
+      // else — four seconds, another row, closing the menu — takes it back.
+      const armed = arming === preset.name;
       const del = document.createElement("button");
       del.className = "preset-del";
-      del.textContent = "×";
-      del.title = `Delete "${preset.name}"`;
-      del.setAttribute("aria-label", `Delete preset ${preset.name}`);
+      del.classList.toggle("armed", armed);
+      del.textContent = armed ? "Delete?" : "×";
+      del.title = armed ? `Click again to delete "${preset.name}"` : `Delete "${preset.name}"`;
+      del.setAttribute(
+        "aria-label",
+        armed ? `Confirm deleting preset ${preset.name}` : `Delete preset ${preset.name}`,
+      );
       del.addEventListener("click", () => {
+        if (!armed) {
+          disarm();
+          arming = preset.name;
+          armTimer = setTimeout(() => {
+            if (disarm()) render();
+          }, ARM_MS);
+          render();
+          return;
+        }
+        disarm();
         presets = withoutPreset(presets, preset.name);
         persistPresets();
         setTrigger(preset.name, null);
         if (editing === preset.name) editing = null;
         render();
       });
-      row.append(apply, when, del);
+      row.append(up, apply, when, del);
       list.append(row);
       if (editing === preset.name) list.append(triggerEditor(preset.name));
     }
+
+    // The way back from a deleted shipped board. Offered only while one is
+    // actually missing, so it is invisible on a board that has them all.
+    const missing = missingBuiltins(presets);
+    if (!missing.length) return;
+    const full = presets.length >= MAX_PRESETS;
+    const restore = document.createElement("button");
+    restore.className = "preset-restore";
+    restore.disabled = full;
+    restore.textContent = full
+      ? `Delete a preset to restore ${missing.join(", ")}`
+      : `↺ Restore ${missing.join(", ")}`;
+    restore.title = full
+      ? `No room for ${missing.length > 1 ? "these boards" : "this board"} until a preset is deleted`
+      : `Put back the shipped board${missing.length > 1 ? "s" : ""}, with ${
+          missing.length > 1 ? "their triggers" : "its trigger"
+        }`;
+    restore.addEventListener("click", () => {
+      disarm();
+      const stored = presets;
+      adopt(restoreBuiltins(stored, localStorage.getItem(SEEDED_KEY), WIDGETS), stored);
+      render();
+    });
+    list.append(restore);
   };
   renderPresetMenu = () => {
     // Never under the user's caret: an open app-name field would lose it.
@@ -2600,6 +2691,7 @@ function initPresetMenu() {
   });
 
   saveBtn.addEventListener("click", () => {
+    if (disarm()) render();
     saveBtn.hidden = true;
     form.hidden = false;
     // Offer the current preset's name so re-saving after a tweak is one Enter.
@@ -2626,6 +2718,7 @@ function initPresetMenu() {
     document.getElementById("theme-menu").hidden = true;
     document.getElementById("display-menu").hidden = true;
     document.getElementById("wallpaper-panel").hidden = true;
+    disarm();
     if (menu.hidden) {
       closeNaming();
       editing = null;
@@ -2638,6 +2731,7 @@ function initPresetMenu() {
   menu.addEventListener("click", (e) => e.stopPropagation());
   menu.addEventListener("pointerdown", (e) => e.stopPropagation());
   document.addEventListener("click", () => {
+    disarm();
     menu.hidden = true;
     closeNaming();
   });

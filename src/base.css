@@ -221,6 +221,26 @@
   text-overflow: ellipsis;
 }
 
+/* Priority handle. Sits at the far left, as far from the delete as the row
+   allows — the two were neighbours once and the wrong one got clicked. */
+.preset-row .preset-up {
+  flex: none;
+  padding: 8px 6px 8px 8px;
+  color: rgba(201, 204, 211, 0.3);
+  font-size: 0.55rem;
+  line-height: 1;
+}
+
+.preset-row .preset-up:hover:not(:disabled) {
+  color: #eceae3;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.preset-row .preset-up:disabled {
+  opacity: 0.22;
+  cursor: default;
+}
+
 .preset-row .preset-del {
   flex: none;
   padding: 8px 9px;
@@ -232,6 +252,16 @@
 .preset-row .preset-del:hover {
   color: #e57b63;
   background: rgba(229, 123, 99, 0.12);
+}
+
+/* Armed: the first click asked, this one means it. Loud enough that a misclick
+   is seen before the second click, which is the whole point of the state. */
+.preset-row .preset-del.armed {
+  padding: 6px 8px;
+  color: #e57b63;
+  background: rgba(229, 123, 99, 0.16);
+  font: 600 0.68rem/1 "Inter", system-ui, sans-serif;
+  border-radius: 7px;
 }
 
 /* Room for the trigger editor's five-way segmented control. */
@@ -401,6 +431,24 @@
   padding: 7px 10px 9px;
   font: 400 0.74rem/1.35 "Inter", system-ui, sans-serif;
   color: rgba(201, 204, 211, 0.45);
+}
+
+/* Offered only while a shipped board is missing from the list. */
+.preset-restore {
+  padding: 7px 10px;
+  font: 500 0.74rem/1.3 "Inter", system-ui, sans-serif;
+  color: rgba(201, 204, 211, 0.6);
+  text-align: left;
+}
+
+.preset-restore:hover:not(:disabled) {
+  color: #eceae3;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.preset-restore:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .preset-new[hidden] {

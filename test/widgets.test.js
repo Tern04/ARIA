@@ -7,7 +7,11 @@ import {
   MAX_PRESETS,
   applyBuiltins,
   boardToLayout,
+  missingBuiltins,
+  restoreBuiltins,
   sanitizeBoard,
+  withPreset,
+  withoutPreset,
 } from "../src/lib/presets.js";
 import { sanitizeTrigger } from "../src/lib/automation.js";
 
@@ -153,4 +157,61 @@ test("a legacy seeded flag does not block the current version", () => {
   // The first version of the seeder wrote the string "1", not a version map.
   const out = applyBuiltins([], "1", WIDGETS);
   assert.equal(out.presets.length, BUILTIN_PRESETS.length);
+});
+
+/* ── restoring a shipped preset ──────────────────────────────
+   The seeded record above is what keeps a deleted shipped preset deleted, so
+   an explicit restore is the only way back. It has to land the board at its
+   shipped rank, because the list order is the auto-switch priority. */
+
+const shipped = BUILTIN_PRESETS.map((b) => b.name);
+const mine = { gpu: { c: 1, r: 1, size: "m", hidden: false } };
+
+test("a deleted shipped preset is reported missing and can be restored", () => {
+  const first = applyBuiltins([], null, WIDGETS);
+  const kept = withoutPreset(first.presets, shipped[0]);
+  assert.deepEqual(missingBuiltins(kept), [shipped[0]]);
+
+  const back = restoreBuiltins(kept, JSON.stringify(first.seeded), WIDGETS);
+  assert.deepEqual(back.presets.map((p) => p.name), shipped);
+  assert.deepEqual(missingBuiltins(back.presets), []);
+  assert.deepEqual(
+    back.triggers[shipped[0]],
+    BUILTIN_PRESETS[0].trigger,
+    "the shipped rule comes back with the board",
+  );
+  assert.deepEqual(
+    back.presets[0].board,
+    sanitizeBoard(BUILTIN_PRESETS[0].board, WIDGETS),
+    "and the board is the shipped one, not an empty shell",
+  );
+});
+
+test("a restored shipped preset comes back above the ones it outranks", () => {
+  const first = applyBuiltins([], null, WIDGETS);
+  // Deleted, then a board of the user's own saved after it: the restore must
+  // insert at the shipped rank rather than append below everything.
+  const kept = withPreset(withoutPreset(first.presets, shipped[0]), "Linux", mine, WIDGETS);
+  const back = restoreBuiltins(kept, JSON.stringify(first.seeded), WIDGETS);
+  assert.deepEqual(back.presets.map((p) => p.name), [...shipped, "Linux"]);
+});
+
+test("restoring leaves a shipped preset the user rearranged alone", () => {
+  const first = applyBuiltins([], null, WIDGETS);
+  const kept = withPreset(withoutPreset(first.presets, shipped[0]), shipped[1], mine, WIDGETS);
+  const back = restoreBuiltins(kept, JSON.stringify(first.seeded), WIDGETS);
+  assert.deepEqual(
+    back.presets.find((p) => p.name === shipped[1]).board,
+    sanitizeBoard(mine, WIDGETS),
+    "only the missing ones are restored",
+  );
+});
+
+test("a full list is not evicted to make room for a restore", () => {
+  const first = applyBuiltins([], null, WIDGETS);
+  let kept = withoutPreset(first.presets, shipped[0]);
+  for (let i = kept.length; i < MAX_PRESETS; i++) kept = withPreset(kept, `mine ${i}`, mine, WIDGETS);
+  assert.equal(kept.length, MAX_PRESETS);
+  const back = restoreBuiltins(kept, JSON.stringify(first.seeded), WIDGETS);
+  assert.deepEqual(back.presets.map((p) => p.name), kept.map((p) => p.name));
 });
