@@ -18,7 +18,8 @@ struct ScreenTime {
     yesterday_total: Option<u64>,
     /// Which backend is feeding the tracker — the widget uses it to explain
     /// itself when a per-app breakdown isn't obtainable on this session.
-    /// "macos" | "windows" | "x11" | "cosmic" | "wlr" | "idle-only" | "unsupported"
+    /// "macos" | "windows" | "x11" | "cosmic" | "wlr" | "xwayland" | "idle-only"
+    /// | "unsupported"
     source: &'static str,
 }
 
@@ -340,13 +341,32 @@ fn warn_once(msg: &str) {
     eprintln!("{msg}");
 }
 
+/// Whether the XWayland fallback is available: a Wayland session whose
+/// compositor names no windows, but which still runs an X server we can ask.
+/// Resolved once — `DISPLAY` does not appear mid-session.
+#[cfg(target_os = "linux")]
+fn xwayland_fallback() -> bool {
+    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *F.get_or_init(|| {
+        backend() == Backend::Wayland
+            && std::env::var_os("DISPLAY").is_some()
+            && wl::source() == "idle-only"
+    })
+}
+
 #[cfg(target_os = "linux")]
 fn frontmost_app(_app: &AppHandle) -> Option<String> {
     match backend() {
         Backend::X11 => x11::active_app(),
         Backend::Wayland => {
             wl::ensure_started();
-            wl::active_app()
+            // GNOME/Mutter implements no toplevel protocol, so the Wayland
+            // client can never name a window there. XWayland still can, and
+            // every Proton game is an XWayland client — which is the whole
+            // reason the game trigger exists. Native Wayland windows stay
+            // invisible to this, so it is a fallback and never an override:
+            // a compositor that does name windows is always believed first.
+            wl::active_app().or_else(|| xwayland_fallback().then(x11::focused_app).flatten())
         }
         Backend::Unsupported => None,
     }
@@ -379,7 +399,14 @@ fn source() -> &'static str {
         Backend::X11 => "x11",
         Backend::Wayland => {
             wl::ensure_started();
-            wl::source()
+            // Naming *some* windows is a different state from naming none, and
+            // the widget says so: an app breakdown that silently omits every
+            // native Wayland window would read as a wrong total, not a partial
+            // one.
+            match wl::source() {
+                "idle-only" if xwayland_fallback() => "xwayland",
+                other => other,
+            }
         }
         Backend::Unsupported => "unsupported",
     }
@@ -440,7 +467,12 @@ mod x11 {
             let has_screensaver = conn
                 .extension_information(x11rb::protocol::screensaver::X11_EXTENSION_NAME)?
                 .is_some();
-            if !has_screensaver {
+            // Only worth saying on a real X11 session, where this connection
+            // is also the idle source. On the XWayland fallback the idle
+            // signal comes from Wayland's ext-idle-notify and X is asked for
+            // nothing but the focused window, so the warning would send the
+            // next reader looking for a fault that isn't there.
+            if !has_screensaver && super::backend() == super::Backend::X11 {
                 super::warn_once(
                     "screentime x11: MIT-SCREEN-SAVER unavailable — idle time will not be detected",
                 );
@@ -524,6 +556,81 @@ mod x11 {
         })
         .flatten()
     }
+
+    /// The focused toplevel, for the XWayland fallback only.
+    ///
+    /// Asks two independent questions and believes the answer only when they
+    /// agree: `_NET_ACTIVE_WINDOW` must name a window, and the X input focus
+    /// must sit inside that same window. Measured on GNOME 48/Mutter with a
+    /// Proton game running (2026-09-17):
+    ///
+    /// ```text
+    ///   in the game      focus 0x05400003 steam_app_2357570   active 0x05400003
+    ///   alt-tabbed out   focus 0x00600003 <no WM_CLASS>       active 0x00000000
+    /// ```
+    ///
+    /// Mutter clears `_NET_ACTIVE_WINDOW` when a native Wayland window takes
+    /// focus, and XWayland parks the input focus on an internal window that
+    /// carries no WM_CLASS — so either signal alone would do here. Requiring
+    /// both is for the compositor that does neither: a stale "the game is in
+    /// front" would pin the Gaming board to a game you left an hour ago, and
+    /// this project has already shipped that bug once. Disagreement reads as
+    /// "nothing of ours is focused", which is the safe direction — a rule that
+    /// lets go too eagerly is a worse board for a moment, not a stuck one.
+    ///
+    /// The input focus is usually a child of the toplevel (a focus proxy), so
+    /// it is walked up to the direct child of the root before comparing; only
+    /// toplevels carry WM_CLASS.
+    pub fn focused_app() -> Option<String> {
+        with_conn(|c| {
+            let active = c
+                .conn
+                .get_property(false, c.root, c.net_active_window, AtomEnum::WINDOW, 0, 1)?
+                .reply()?
+                .value32()
+                .and_then(|mut v| v.next())
+                .unwrap_or(0);
+            // 0 = no X client is active. Under XWayland that is the honest
+            // report that a Wayland window has the focus.
+            if active == 0 {
+                return Ok(None);
+            }
+            // 0 = None, 1 = PointerRoot: no client window holds the focus.
+            let focus = c.conn.get_input_focus()?.reply()?.focus;
+            if focus <= 1 || focus == c.root {
+                return Ok(None);
+            }
+            let mut win = focus;
+            for _ in 0..MAX_DEPTH {
+                if win == active {
+                    break;
+                }
+                let Ok(tree) = c.conn.query_tree(win)?.reply() else {
+                    return Ok(None); // the window went away mid-walk
+                };
+                if tree.parent == c.root || tree.parent == 0 {
+                    break;
+                }
+                win = tree.parent;
+            }
+            if win != active {
+                return Ok(None); // the two disagree — believe neither
+            }
+            let class = c
+                .conn
+                .get_property(false, win, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 256)?
+                .reply();
+            // No WM_CLASS is not a client window; deliberately no _NET_WM_NAME
+            // fallback here, unlike active_app — a title is not an app id, and
+            // the game trigger matches on the id.
+            Ok(class.ok().and_then(|cl| class_name(&cl.value)))
+        })
+        .flatten()
+    }
+
+    /// Depth cap on the walk to the toplevel; a reparenting WM adds one or two
+    /// frames, never sixteen, and a cycle must not hang the tracker.
+    const MAX_DEPTH: usize = 16;
 
     /// Seconds since the last keyboard/pointer input. 0 (i.e. "active") when
     /// the extension is missing, so ticks are counted rather than dropped.

@@ -1066,6 +1066,14 @@ const ST_NO_APP_BREAKDOWN = {
   unsupported: "no window or idle source on this session",
 };
 
+// Backends that name *some* windows. On GNOME/Wayland the compositor names
+// none, but XWayland still names X11 clients — every Proton game among them —
+// so the list is real, just not the whole session. Saying so is the difference
+// between a short list and a wrong one.
+const ST_PARTIAL = {
+  xwayland: "X11 apps only — native Wayland windows aren't named",
+};
+
 function renderScreentime() {
   if (!screentimeData) return;
   const p = screentimeData;
@@ -1094,6 +1102,14 @@ function renderScreentime() {
     why.textContent = note;
     body.append(why);
     return; // there is no app list to draw
+  }
+  // A partial breakdown still gets its list — with the caveat above it.
+  const partial = ST_PARTIAL[p.source];
+  if (partial && size !== "s") {
+    const why = document.createElement("div");
+    why.className = "st-note";
+    why.textContent = partial;
+    body.append(why);
   }
   const list = document.createElement("div");
   list.className = "st-list fill-list";
