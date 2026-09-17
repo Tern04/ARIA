@@ -1102,7 +1102,7 @@ function mattersSources(now) {
     // Falsy timestamps become undefined so the ranking sees "unknown" rather
     // than the epoch, which would read as a session lasting since 1970.
     session: {
-      app: focusSince ? focusedApp : null,
+      app: focusSince ? focusedLabel : null,
       since: focusSince || undefined,
       activeSince: activeSince || undefined,
     },
@@ -3054,6 +3054,9 @@ let autoState = null;
 // The board from before the first automatic switch; what "restore" puts back.
 let autoSnapshot = null;
 let focusedApp = null;
+// The same app as a human would name it ("Overwatch", not Steam_app_2357570).
+// Display only: the rules match on focusedApp, which is the window class.
+let focusedLabel = null;
 // The last app other than ARIA to have focus, for the trigger editor.
 let lastFocusedApp = null;
 let hudInputAt = 0;
@@ -3114,7 +3117,7 @@ function initAutomation() {
  * *holding* focus doesn't count: closing the last other window leaves focus on
  * ARIA indefinitely, and a rule pinned to a stale name would never let go.
  */
-function onActivity({ app, idle }) {
+function onActivity({ app, label, idle }) {
   const now = Date.now();
   // A break is a break whoever was in front, so idle is tracked before the
   // HUD gate below — otherwise working in the HUD would look like a break
@@ -3128,6 +3131,7 @@ function onActivity({ app, idle }) {
   // When the focused app changes, the session in the old one is over.
   if ((app ?? null) !== focusedApp) focusSince = app ? now : 0;
   focusedApp = app ?? null;
+  focusedLabel = focusedApp && (label ?? focusedApp);
 }
 
 function autoTick() {

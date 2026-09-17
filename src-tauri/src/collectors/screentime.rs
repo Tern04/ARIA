@@ -26,7 +26,10 @@ struct ScreenTime {
 /// What has focus right now — the auto-switch rules' live signal.
 #[derive(Serialize, Clone)]
 struct Activity {
+    /// The window class, which is what the rules match on. Never prettified.
     app: Option<String>,
+    /// The same app as a human would name it. Display only.
+    label: Option<String>,
     idle: bool,
 }
 
@@ -95,7 +98,12 @@ pub fn spawn(app: AppHandle) {
             // Every tick, not only on change: the board's auto-switch rules
             // time their own enter/exit delays and need a steady clock, and a
             // listener registered after a change would otherwise wait forever.
-            if let Err(e) = app.emit("activity", Activity { app: focused, idle }) {
+            let activity = Activity {
+                label: focused.as_deref().map(display_name),
+                app: focused,
+                idle,
+            };
+            if let Err(e) = app.emit("activity", activity) {
                 eprintln!("activity emit failed: {e}");
             }
 
@@ -116,15 +124,11 @@ pub fn spawn(app: AppHandle) {
 pub fn spawn(_app: AppHandle) {}
 
 fn summarize(usage: &DayUsage, yesterday_total: Option<u64>) -> ScreenTime {
-    let mut apps: Vec<AppTime> = usage
-        .apps
-        .iter()
-        .map(|(name, secs)| AppTime {
-            name: name.clone(),
-            secs: *secs,
-        })
-        .collect();
-    apps.sort_by(|a, b| b.secs.cmp(&a.secs));
+    let mut apps: Vec<AppTime> =
+        labelled(usage.apps.iter().map(|(name, secs)| (name.clone(), *secs)))
+            .into_iter()
+            .map(|(name, secs)| AppTime { name, secs })
+            .collect();
     apps.truncate(TOP_APPS);
     ScreenTime {
         total: usage.total,
@@ -157,8 +161,7 @@ pub fn day_totals(app: &AppHandle, day: &str) -> (Option<u64>, Vec<(String, u64)
     let Some(usage) = load_day(app, day) else {
         return (None, Vec::new());
     };
-    let mut apps: Vec<(String, u64)> = usage.apps.into_iter().collect();
-    apps.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut apps = labelled(usage.apps);
     apps.truncate(TOP_APPS);
     (Some(usage.total), apps)
 }
@@ -412,14 +415,17 @@ fn source() -> &'static str {
     }
 }
 
-/// A reverse-DNS app id or WM_CLASS → a short display label:
-/// "com.system76.CosmicTerm" → "CosmicTerm", "firefox" → "Firefox",
-/// "steam_app_2357570" → "Overwatch".
+/// A reverse-DNS app id or WM_CLASS → a short label:
+/// "com.system76.CosmicTerm" → "CosmicTerm", "firefox" → "Firefox".
+///
+/// Deliberately **not** where a Steam id becomes a game name. This string is
+/// what the auto-switch rules match on (`isGameApp` tests for
+/// `steam_app_<id>`) and what the day files are keyed by; resolving the name
+/// here renamed the very thing the Gaming board's trigger looks for, and the
+/// board silently stopped switching itself. The game name is a label — see
+/// `display_name`.
 #[cfg(target_os = "linux")]
 fn friendly(app_id: &str) -> String {
-    if let Some(name) = steam_app_name(app_id) {
-        return name;
-    }
     let base = app_id.strip_suffix(".desktop").unwrap_or(app_id);
     let seg = base.rsplit('.').next().unwrap_or(base);
     let seg = if seg.is_empty() { base } else { seg };
@@ -428,6 +434,34 @@ fn friendly(app_id: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => app_id.to_string(),
     }
+}
+
+/// The label a human reads, for the same app the matchers know by its class.
+/// Only ever used for display: the session line in the header strip, and the
+/// app lists in SCREEN TIME and TRENDS.
+fn display_name(app: &str) -> String {
+    #[cfg(target_os = "linux")]
+    if let Some(name) = steam_app_name(app) {
+        return name;
+    }
+    app.to_string()
+}
+
+/// App times relabelled for display and merged, ranked longest first. A day
+/// file can hold both `Steam_app_2357570` and `Overwatch` for one game — the
+/// build in between resolved the name before storing it — and two rows for
+/// the same afternoon would be a lie either way you read them.
+fn labelled(apps: impl IntoIterator<Item = (String, u64)>) -> Vec<(String, u64)> {
+    let mut out: Vec<(String, u64)> = Vec::new();
+    for (name, secs) in apps {
+        let label = display_name(&name);
+        match out.iter_mut().find(|(n, _)| *n == label) {
+            Some(slot) => slot.1 += secs,
+            None => out.push((label, secs)),
+        }
+    }
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
 }
 
 /// A Proton/Steam window calls itself `steam_app_<id>`, which is the one name
@@ -442,7 +476,14 @@ fn friendly(app_id: &str) -> String {
 fn steam_app_name(app_id: &str) -> Option<String> {
     use std::collections::HashMap;
     use std::sync::Mutex;
-    let id = app_id.strip_prefix("steam_app_")?;
+    // Case-insensitive: the class arrives as `steam_app_2357570`, but a day
+    // file stores what `friendly` made of it, `Steam_app_2357570`.
+    const PREFIX: &str = "steam_app_";
+    let id = app_id
+        .as_bytes()
+        .get(..PREFIX.len())
+        .filter(|head| head.eq_ignore_ascii_case(PREFIX.as_bytes()))
+        .map(|_| &app_id[PREFIX.len()..])?;
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -473,6 +514,17 @@ fn steam_libraries() -> Vec<PathBuf> {
         home.join(".local/share/Steam/steamapps"),
         home.join(".var/app/com.valvesoftware.Steam/data/Steam/steamapps"), // flatpak
     ];
+    expand_libraries(&roots)
+}
+
+/// Every one of `roots` that exists, plus every library their
+/// `libraryfolders.vdf` files point at — games kept on a second drive.
+///
+/// A library on an unmounted drive is simply absent rather than an error: the
+/// id still matches the game trigger (that is a window class, not a file), the
+/// name just falls back to the class until the drive is there.
+#[cfg(target_os = "linux")]
+fn expand_libraries(roots: &[PathBuf]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = roots.iter().filter(|p| p.is_dir()).cloned().collect();
     // "path"  "/mnt/games/SteamLibrary"  → /mnt/games/SteamLibrary/steamapps
     for root in &out.clone() {
@@ -1164,8 +1216,106 @@ mod tests {
         assert_eq!(steam_app_name("steam_app_"), None);
         assert_eq!(steam_app_name("steam_app_notanumber"), None);
         // An id that is syntactically fine but not installed resolves to
-        // nothing, and `friendly` then falls back to the raw class.
-        assert_eq!(friendly("steam_app_999999999"), "Steam_app_999999999");
+        // nothing, and the label then falls back to the class as given.
+        assert_eq!(steam_app_name("steam_app_999999999"), None);
+        assert_eq!(display_name("steam_app_999999999"), "steam_app_999999999");
+    }
+
+    /// The regression this pair exists for: resolving the game name inside
+    /// `friendly` renamed the string `isGameApp` matches on, so the Gaming
+    /// board stopped switching itself while Overwatch was in focus.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_class_the_rules_match_on_survives_being_labelled() {
+        assert_eq!(friendly("steam_app_2357570"), "Steam_app_2357570");
+        // Whatever the label turns out to be, the matcher form still reads as
+        // a Steam app id — which is the whole of what the game trigger tests.
+        let matcher = friendly("steam_app_2357570");
+        assert!(matcher.to_lowercase().starts_with("steam_app_"));
+        assert!(matcher["steam_app_".len()..].bytes().all(|b| b.is_ascii_digit()));
+    }
+
+    /// Live check against this machine's Steam install: every game it has,
+    /// in every library, must resolve to a name. Skipped where Steam isn't
+    /// installed so the suite stays runnable anywhere. Nothing here knows any
+    /// particular game — the ids come off the disk.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_installed_game_resolves_to_a_name() {
+        let mut seen = 0;
+        let libs = steam_libraries();
+        eprintln!("steam libraries: {libs:#?}");
+        for dir in libs {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for e in entries.flatten() {
+                let file = e.file_name();
+                let name = file.to_string_lossy();
+                let Some(id) = name
+                    .strip_prefix("appmanifest_")
+                    .and_then(|r| r.strip_suffix(".acf"))
+                else {
+                    continue;
+                };
+                let class = format!("steam_app_{id}");
+                let label = display_name(&class);
+                eprintln!("{dir:?} {class} -> {label}");
+                assert_ne!(label, class, "{class} in {dir:?} did not resolve");
+                seen += 1;
+            }
+        }
+        if seen == 0 {
+            eprintln!("skipping: no Steam manifests on this machine");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_library_on_another_drive_is_found_through_the_vdf() {
+        let base = std::env::temp_dir().join(format!("aria-libs-{}", std::process::id()));
+        let main = base.join("home/steamapps");
+        let ssd = base.join("media/GamesSSD/SteamLibrary/steamapps");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&ssd).unwrap();
+        // Exactly the shape Steam writes, tabs and all, plus a library on a
+        // drive that is not mounted right now.
+        std::fs::write(
+            main.join("libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n\t\"1\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n\t\"2\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n}}\n",
+                base.join("home").display(),
+                base.join("media/GamesSSD/SteamLibrary").display(),
+                base.join("media/NotMounted").display(),
+            ),
+        )
+        .unwrap();
+
+        let found = expand_libraries(&[main.clone()]);
+        assert!(found.contains(&main), "the main library");
+        assert!(found.contains(&ssd), "the library on the other drive");
+        assert_eq!(found.len(), 2, "an unmounted drive is absent, not an error");
+
+        // And a game installed there resolves by name like any other.
+        std::fs::write(
+            ssd.join("appmanifest_292030.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"292030\"\n\t\"name\"\t\t\"The Witcher 3\"\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            read_app_manifest(&ssd.join("appmanifest_292030.acf")),
+            Some("The Witcher 3".to_string())
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn app_times_are_merged_under_one_label() {
+        // A day that spans the two builds holds the same game twice.
+        let merged = labelled(vec![
+            ("firefox".to_string(), 60),
+            ("Overwatch".to_string(), 300),
+            ("Overwatch".to_string(), 120),
+        ]);
+        assert_eq!(merged, vec![("Overwatch".to_string(), 420), ("firefox".to_string(), 60)]);
     }
 
     #[cfg(target_os = "linux")]
