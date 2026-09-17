@@ -413,9 +413,13 @@ fn source() -> &'static str {
 }
 
 /// A reverse-DNS app id or WM_CLASS → a short display label:
-/// "com.system76.CosmicTerm" → "CosmicTerm", "firefox" → "Firefox".
+/// "com.system76.CosmicTerm" → "CosmicTerm", "firefox" → "Firefox",
+/// "steam_app_2357570" → "Overwatch".
 #[cfg(target_os = "linux")]
 fn friendly(app_id: &str) -> String {
+    if let Some(name) = steam_app_name(app_id) {
+        return name;
+    }
     let base = app_id.strip_suffix(".desktop").unwrap_or(app_id);
     let seg = base.rsplit('.').next().unwrap_or(base);
     let seg = if seg.is_empty() { base } else { seg };
@@ -424,6 +428,89 @@ fn friendly(app_id: &str) -> String {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => app_id.to_string(),
     }
+}
+
+/// A Proton/Steam window calls itself `steam_app_<id>`, which is the one name
+/// on the board that means nothing to a human — and the one most likely to be
+/// on screen for hours. Steam already knows the answer: every installed game
+/// has an `appmanifest_<id>.acf` next to it naming it. So read it.
+///
+/// Looked up once per id and cached, including the misses: a game with no
+/// manifest (uninstalled since, or a shortcut) must not re-scan the disk
+/// every five seconds for the rest of the session.
+#[cfg(target_os = "linux")]
+fn steam_app_name(app_id: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    let id = app_id.strip_prefix("steam_app_")?;
+    if id.is_empty() || !id.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    static CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+    let mut guard = CACHE.lock().ok()?;
+    let cache = guard.get_or_insert_with(HashMap::new);
+    if let Some(hit) = cache.get(id) {
+        return hit.clone();
+    }
+    let found = steam_libraries()
+        .into_iter()
+        .find_map(|dir| read_app_manifest(&dir.join(format!("appmanifest_{id}.acf"))));
+    cache.insert(id.to_string(), found.clone());
+    found
+}
+
+/// Every `steamapps` directory Steam might have put a game in: the usual
+/// install roots, plus whatever `libraryfolders.vdf` adds for games kept on
+/// another drive.
+#[cfg(target_os = "linux")]
+fn steam_libraries() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let roots = [
+        home.join(".steam/steam/steamapps"),
+        home.join(".steam/debian-installation/steamapps"),
+        home.join(".local/share/Steam/steamapps"),
+        home.join(".var/app/com.valvesoftware.Steam/data/Steam/steamapps"), // flatpak
+    ];
+    let mut out: Vec<PathBuf> = roots.iter().filter(|p| p.is_dir()).cloned().collect();
+    // "path"  "/mnt/games/SteamLibrary"  → /mnt/games/SteamLibrary/steamapps
+    for root in &out.clone() {
+        let Ok(vdf) = std::fs::read_to_string(root.join("libraryfolders.vdf")) else {
+            continue;
+        };
+        for line in vdf.lines() {
+            let Some(path) = vdf_value(line, "path") else { continue };
+            let dir = PathBuf::from(path).join("steamapps");
+            if dir.is_dir() && !out.contains(&dir) {
+                out.push(dir);
+            }
+        }
+    }
+    out
+}
+
+/// The `"name"` field of an appmanifest, trimmed of the trademark noise Steam
+/// keeps in its titles ("Overwatch®" is not what anyone calls it).
+#[cfg(target_os = "linux")]
+fn read_app_manifest(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let name = text.lines().find_map(|l| vdf_value(l, "name"))?;
+    let name = name.trim_matches(|c: char| c == '®' || c == '™' || c.is_whitespace());
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// One line of Valve's key/value format: `\t"key"\t\t"value"`. Good enough for
+/// the two flat fields read here, and never asked to parse the nested blocks.
+#[cfg(target_os = "linux")]
+fn vdf_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let mut parts = line.split('"').skip(1);
+    let found = parts.next()?;
+    if found != key {
+        return None;
+    }
+    parts.next()?; // the whitespace between the quoted key and quoted value
+    parts.next()
 }
 
 /// X11 backend: the focused window from `_NET_ACTIVE_WINDOW` (EWMH, honoured by
@@ -1054,6 +1141,47 @@ mod wl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_vdf_line_yields_only_its_own_key() {
+        assert_eq!(vdf_value("\t\"name\"\t\t\"Overwatch®\"", "name"), Some("Overwatch®"));
+        assert_eq!(vdf_value("\t\"path\"\t\t\"/mnt/games/Lib\"", "path"), Some("/mnt/games/Lib"));
+        assert_eq!(vdf_value("\t\"name\"\t\t\"x\"", "path"), None, "a different key is not a match");
+        // Nothing here is a well-formed pair; none of it may panic.
+        assert_eq!(vdf_value("", "name"), None);
+        assert_eq!(vdf_value("\"name\"", "name"), None);
+        assert_eq!(vdf_value("{", "name"), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_steam_window_is_named_by_its_manifest() {
+        // Only the well-formed ids are looked up at all; everything else must
+        // fall through to the ordinary WM_CLASS handling rather than hitting
+        // the disk on every activity tick.
+        assert_eq!(steam_app_name("firefox"), None);
+        assert_eq!(steam_app_name("steam_app_"), None);
+        assert_eq!(steam_app_name("steam_app_notanumber"), None);
+        // An id that is syntactically fine but not installed resolves to
+        // nothing, and `friendly` then falls back to the raw class.
+        assert_eq!(friendly("steam_app_999999999"), "Steam_app_999999999");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_manifest_is_read_and_stripped_of_its_trademark() {
+        let dir = std::env::temp_dir().join(format!("aria-manifest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("appmanifest_1.acf");
+        std::fs::write(&path, "\"AppState\"\n{\n\t\"appid\"\t\t\"1\"\n\t\"name\"\t\t\"Overwatch®\"\n}\n").unwrap();
+        assert_eq!(read_app_manifest(&path), Some("Overwatch".to_string()));
+
+        std::fs::write(&path, "\"AppState\"\n{\n\t\"appid\"\t\t\"1\"\n}\n").unwrap();
+        assert_eq!(read_app_manifest(&path), None, "a manifest with no name is not a name");
+        assert_eq!(read_app_manifest(&dir.join("missing.acf")), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
