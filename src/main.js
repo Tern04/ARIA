@@ -4,6 +4,7 @@ import { HISTORY_LEN, autoScale, latest, peak, pushSample, seriesPaths } from ".
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import { WIDGETS, defaultLayout } from "./lib/widgets.js";
 import { MIN_DAYS, anomalies, coverage, fmtHours, trends, week } from "./lib/insights.js";
+import { whatMatters } from "./lib/matters.js";
 import {
   addNote,
   dueLabel,
@@ -1054,6 +1055,127 @@ function statRow(value, label) {
 // emit can't race ahead of registration (listen() registers over async IPC).
 function setStatus(id, online) {
   document.getElementById(id).classList.toggle("online", online);
+  sourceOnline[id] = online;
+}
+
+/* ── "what matters now" strip ───────────────────────────────
+   The header slot that used to hold six connection dots. They were green all
+   day and carried almost nothing, while the things worth acting on sat
+   scattered across nine widgets. Now the slot ranks across all of them and
+   cycles; the dots come back on hover, and a source that goes down becomes
+   the top item rather than a colour only a careful eye would catch.
+
+   The ranking is in lib/matters.js and unit-tested; this owns the clock, the
+   cycling and the jump. */
+
+// Which status dot stands for which widget. MUSIC is deliberately absent:
+// its dot means "something is playing", so "MUSIC not connected" would be a
+// false alarm every time the music stops.
+const STATUS_SOURCES = {
+  "status-stag": { widget: "stag", label: "STAG" },
+  "status-cal": { widget: "calendar", label: "CAL" },
+  "status-github": { widget: "github", label: "GITHUB" },
+  "status-mail": { widget: "email", label: "MAIL" },
+  "status-discord": { widget: "discord", label: "DISCORD" },
+};
+// Only ids we have actually heard from, so nothing is "down" before its
+// collector's first emit.
+const sourceOnline = {};
+
+const MATTERS_CYCLE_MS = 8000;
+let mattersItems = [];
+let mattersAt = 0;
+let mattersHeld = false;
+let mattersShownAt = Date.now();
+
+function mattersSources(now) {
+  return {
+    offline: Object.entries(STATUS_SOURCES)
+      .filter(([id]) => sourceOnline[id] === false)
+      .map(([, src]) => src),
+    agenda: automationAgenda(stagData, calData, now),
+    insights: trendsDays ? anomalies(trendsDays, now) : [],
+    github: githubData,
+    email: emailData,
+    notes,
+    discord: discordData,
+    // Falsy timestamps become undefined so the ranking sees "unknown" rather
+    // than the epoch, which would read as a session lasting since 1970.
+    session: {
+      app: focusSince ? focusedApp : null,
+      since: focusSince || undefined,
+      activeSince: activeSince || undefined,
+    },
+    classes: stagData?.status === "connected" ? (stagData.timetable?.classes ?? []) : [],
+  };
+}
+
+function refreshMatters() {
+  const now = Date.now();
+  const next = whatMatters(mattersSources(now), now);
+  // Keep showing the same item across a refresh when the list is unchanged;
+  // otherwise a countdown ticking from 22 to 21 min would restart the cycle.
+  const same = next.length === mattersItems.length &&
+    next.every((it, i) => it.widget === mattersItems[i].widget && it.level === mattersItems[i].level);
+  if (!same) mattersAt = 0;
+  mattersItems = next;
+  renderMatters();
+}
+
+function renderMatters() {
+  const bar = document.getElementById("statusbar");
+  const el = document.getElementById("matters");
+  bar.classList.toggle("has-matters", mattersItems.length > 0);
+  if (!mattersItems.length) {
+    el.textContent = "";
+    el.removeAttribute("title");
+    return;
+  }
+  const at = mattersAt % mattersItems.length;
+  const item = mattersItems[at];
+  el.textContent = item.text;
+  el.className = `matters ${item.level === "alert" ? "is-hot" : item.level === "warn" ? "is-warm" : ""}`;
+  el.title = mattersItems.length > 1
+    ? `${mattersItems.map((i) => i.text).join(" · ")}\n\nClick to open ${item.widget.toUpperCase()}`
+    : `Click to open ${item.widget.toUpperCase()}`;
+  el.dataset.widget = item.widget;
+  // Dots on the right of the strip stay meaningful; the count tells you how
+  // much is being hidden behind the one line showing.
+  document.getElementById("matters-more").textContent =
+    mattersItems.length > 1 ? `+${mattersItems.length - 1}` : "";
+}
+
+function initMatters() {
+  const el = document.getElementById("matters");
+  const bar = document.getElementById("statusbar");
+  // Pause the cycle while the pointer is on it — reading a line that moves
+  // out from under you is worse than no line at all.
+  bar.addEventListener("pointerenter", () => (mattersHeld = true));
+  bar.addEventListener("pointerleave", () => (mattersHeld = false));
+  el.addEventListener("click", () => {
+    const id = el.dataset.widget;
+    if (id && WIDGETS[id]) jumpToWidget(id);
+  });
+  setInterval(() => {
+    if (!mattersHeld && mattersItems.length > 1 && Date.now() - mattersShownAt >= MATTERS_CYCLE_MS) {
+      mattersAt += 1;
+      mattersShownAt = Date.now();
+    }
+    refreshMatters();
+  }, 1000);
+  refreshMatters();
+}
+
+/** Bring a widget to the board if it is in the tray, then draw attention. */
+function jumpToWidget(id) {
+  if (layout[id]?.hidden) showWidget(id);
+  const el = widgetEl(id);
+  if (!el) return;
+  el.classList.remove("jumped");
+  // Reflow so the animation restarts when the same widget is clicked twice.
+  void el.offsetWidth;
+  el.classList.add("jumped");
+  setTimeout(() => el.classList.remove("jumped"), 1600);
 }
 
 let screentimeData = null;
@@ -2935,6 +3057,11 @@ let focusedApp = null;
 // The last app other than ARIA to have focus, for the trigger editor.
 let lastFocusedApp = null;
 let hudInputAt = 0;
+// When the focused app took focus, and when the machine last came back from
+// idle. Both feed the header strip, which is the only thing that reports on
+// the session rather than on the day.
+let focusSince = 0;
+let activeSince = Date.now();
 let toastTimer = null;
 
 function persistAutomation() {
@@ -2987,10 +3114,19 @@ function initAutomation() {
  * *holding* focus doesn't count: closing the last other window leaves focus on
  * ARIA indefinitely, and a rule pinned to a stale name would never let go.
  */
-function onActivity({ app }) {
+function onActivity({ app, idle }) {
+  const now = Date.now();
+  // A break is a break whoever was in front, so idle is tracked before the
+  // HUD gate below — otherwise working in the HUD would look like a break
+  // that never ends.
+  if (idle) activeSince = 0;
+  else if (!activeSince) activeSince = now;
+
   const usingHud = document.hasFocus() && Date.now() - hudInputAt < HUD_INPUT_GRACE_MS;
   if (usingHud) return;
   if (app && !document.hasFocus()) lastFocusedApp = app; // the editor's suggestion
+  // When the focused app changes, the session in the old one is over.
+  if ((app ?? null) !== focusedApp) focusSince = app ? now : 0;
   focusedApp = app ?? null;
 }
 
@@ -3821,6 +3957,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   initMusicControls();
   initTelemetry();
   initTrends(); // reads the record on disk, so it polls rather than listens
+  initMatters(); // after the widgets exist: its items link to them
   await initCollectors();
   // All listeners are now registered; let gated collectors start emitting.
   window.__TAURI__.core.invoke("frontend_ready");
