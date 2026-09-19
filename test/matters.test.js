@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LOOKAHEAD_MS, MAX_ITEMS, fmtSpan, nextOnTimetable, whatMatters } from "../src/lib/matters.js";
+import {
+  BREAK_MIN_MS,
+  LOOKAHEAD_MS,
+  MAX_ITEMS,
+  fmtSpan,
+  nextOnTimetable,
+  noteSession,
+  whatMatters,
+} from "../src/lib/matters.js";
 
 const NOW = new Date("2026-09-17T14:00:00").getTime();
 const min = (n) => n * 60_000;
@@ -240,6 +248,67 @@ test("time without a break nudges, then warns", () => {
   assert.equal(row.level, "info");
   const warn = whatMatters({ session: { activeSince: NOW - min(180) } }, NOW);
   assert.equal(warn.find((i) => i.text.includes("without a break")).level, "warn");
+});
+
+/* `noteSession` — one `activity` tick at a time. The tracker says what the
+   machine is doing; these decide what counts as a sitting and what ends it. */
+
+/** Replay a run of ticks five seconds apart and return the final state. */
+const replay = (ticks, start = NOW) => {
+  let state = null;
+  let at = start;
+  for (const [presence, count] of ticks) {
+    for (let i = 0; i < count; i++) {
+      state = noteSession(state, presence, at);
+      at += 5_000;
+    }
+  }
+  return state;
+};
+
+test("a sitting starts with the first sign of use", () => {
+  const s = noteSession(null, "input", NOW);
+  assert.equal(s.activeSince, NOW);
+  assert.equal(noteSession(s, "input", NOW + 5_000).activeSince, NOW, "and keeps its start");
+});
+
+test("watching something is being here, not being away", () => {
+  // The whole reason presence is more than an idle flag: a film plays for two
+  // hours without a keypress, and the old rule called every minute of it a
+  // break. One hour of input, one of media, is one two-hour sitting.
+  const s = replay([["input", 720], ["media", 720]]);
+  assert.equal(s.activeSince, NOW, "media continues the sitting it found");
+  const held = whatMatters({ session: { activeSince: s.activeSince } }, NOW + min(120));
+  assert.equal(held.find((i) => i.text.includes("without a break")).text, "2h 00m without a break");
+});
+
+test("a pause is not a break, but leaving is", () => {
+  // Four minutes away — the phone, the door — is the same sitting.
+  const brief = replay([["input", 240], ["away", 48], ["input", 1]]);
+  assert.equal(brief.activeSince, NOW, "a short absence does not restart the clock");
+
+  // Past five minutes it is a break, and the sitting is over.
+  const gone = replay([["input", 240], ["away", 61]]);
+  assert.equal(gone.activeSince, 0);
+  // Coming back starts a new one, timed from the return and not from the leaving.
+  const back = noteSession(gone, "input", gone.at + 5_000);
+  assert.equal(back.activeSince, gone.at + 5_000);
+});
+
+test("a session that cannot see a break never claims there wasn't one", () => {
+  // No idle source: the machine being switched on is not evidence of anyone
+  // sitting at it, so nothing is reported at all.
+  assert.equal(replay([["unknown", 2000]]).activeSince, 0);
+  const worked = replay([["input", 600]]);
+  assert.equal(noteSession(worked, "unknown", worked.at + 5_000).activeSince, 0);
+});
+
+test("a gap in the ticks ends the sitting, because nobody was here for it", () => {
+  // Suspend, or ARIA not running. The next tick arrives hours later and the
+  // sitting must not swallow the hours in between.
+  const before = replay([["input", 600]]);
+  const after = noteSession(before, "input", before.at + BREAK_MIN_MS + 1);
+  assert.equal(after.activeSince, before.at + BREAK_MIN_MS + 1);
 });
 
 test("the strip always has a floor, so it is never blank", () => {

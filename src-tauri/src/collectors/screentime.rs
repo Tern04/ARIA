@@ -7,6 +7,15 @@ use tauri::{AppHandle, Emitter, Manager};
 const TICK: Duration = Duration::from_secs(5);
 // Ticks are not counted when the user has been idle longer than this.
 const IDLE_LIMIT: f64 = 120.0;
+// How long something playing can stand in for a keypress. Two minutes without
+// input is a break at a desk and the middle of a film in an armchair, and only
+// the speakers can tell the two apart. Long enough for a film or a long match;
+// short enough that music left playing to an empty room stops counting.
+const MEDIA_GRACE: Duration = Duration::from_secs(3 * 3600);
+// How long the media and lock answers are held for. The tracker ticks every
+// five seconds, which is far more often than either of them changes.
+#[cfg(target_os = "linux")]
+const PROBE_TTL: Duration = Duration::from_secs(20);
 // Enough rows to fill the large widget size; smaller sizes clip the rest.
 const TOP_APPS: usize = 8;
 
@@ -30,7 +39,13 @@ struct Activity {
     app: Option<String>,
     /// The same app as a human would name it. Display only.
     label: Option<String>,
+    /// Away from the machine: no input *and* nothing playing. Screen time is
+    /// not counted while this is true.
     idle: bool,
+    /// Why: "input" | "media" | "away" | "unknown". The header strip needs the
+    /// distinction between "away" and "this session cannot tell", which `idle`
+    /// alone collapses into the same `false`.
+    presence: &'static str,
 }
 
 #[derive(Serialize, Clone)]
@@ -75,6 +90,9 @@ pub fn spawn(app: AppHandle) {
         let mut usage = load_day(&app, &day).unwrap_or_default();
         let mut yesterday_total = load_total(&app, &yesterday());
         let mut tick = 0u32;
+        // When a key was last pressed or the mouse last moved, which is what
+        // the media grace is measured from.
+        let mut last_input = std::time::Instant::now();
         loop {
             tokio::time::sleep(TICK).await;
             tick += 1;
@@ -87,7 +105,13 @@ pub fn spawn(app: AppHandle) {
                 yesterday_total = load_total(&app, &yesterday());
             }
 
-            let idle = idle_seconds() >= IDLE_LIMIT;
+            let presence = current_presence(last_input);
+            if presence == Presence::Input {
+                last_input = std::time::Instant::now();
+            }
+            // A session that cannot answer the question is counted rather than
+            // dropped, exactly as before this distinction existed.
+            let idle = presence == Presence::Away;
             let focused = frontmost_app(&app);
             if !idle {
                 usage.total += TICK.as_secs();
@@ -102,6 +126,7 @@ pub fn spawn(app: AppHandle) {
                 label: focused.as_deref().map(display_name),
                 app: focused,
                 idle,
+                presence: presence.as_str(),
             };
             if let Err(e) = app.emit("activity", activity) {
                 eprintln!("activity emit failed: {e}");
@@ -122,6 +147,223 @@ pub fn spawn(app: AppHandle) {
 /// Other Unix without the required window/idle facilities — no tracker.
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub fn spawn(_app: AppHandle) {}
+
+/// Whether the machine is being used, and how that was established.
+///
+/// `Input` and `Media` are both use; the difference is only in how it was
+/// found out, and nothing downstream distinguishes them. `Unknown` is the one
+/// that earns its place: a session with no idle source at all (an X server
+/// without MIT-SCREEN-SAVER, a compositor without ext-idle-notify) cannot tell
+/// a working machine from an empty room, and saying so is better than the lie
+/// that the machine has been in use since it was switched on — which is what
+/// "never idle" amounts to once anything downstream measures a sitting.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Presence {
+    Input,
+    Media,
+    Away,
+    Unknown,
+}
+
+impl Presence {
+    fn as_str(self) -> &'static str {
+        match self {
+            Presence::Input => "input",
+            Presence::Media => "media",
+            Presence::Away => "away",
+            Presence::Unknown => "unknown",
+        }
+    }
+}
+
+/// The rule itself, kept pure so it can be tested without a sound server:
+///
+///   no idle source                                 → Unknown
+///   input in the last two minutes                  → Input
+///   something playing, screen unlocked, and the
+///     last input within the media grace            → Media
+///   otherwise                                      → Away
+///
+/// The grace is what keeps this honest. Without it, a playlist started at
+/// midnight reports a sitting that has lasted all night; with it, media can
+/// only ever extend a sitting that a human actually began.
+fn decide(
+    idle_known: bool,
+    idle_secs: f64,
+    since_input: Duration,
+    media: bool,
+    locked: bool,
+) -> Presence {
+    if !idle_known {
+        return Presence::Unknown;
+    }
+    if idle_secs < IDLE_LIMIT {
+        return Presence::Input;
+    }
+    if media && !locked && since_input < MEDIA_GRACE {
+        return Presence::Media;
+    }
+    Presence::Away
+}
+
+/// Ask the machine the questions `decide` needs, cheapest first: the two
+/// probes below only ever change the answer once keyboard and mouse have
+/// already gone quiet, so they are not asked until then.
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+fn current_presence(last_input: std::time::Instant) -> Presence {
+    let (known, idle_secs) = idle_state();
+    let quiet = known && idle_secs >= IDLE_LIMIT;
+    let media = quiet && media_playing();
+    let locked = media && screen_locked();
+    decide(known, idle_secs, last_input.elapsed(), media, locked)
+}
+
+/// Whether idleness is knowable on this session at all, and how many seconds
+/// it has been. Asked as one question because on Linux the answer comes from
+/// whichever source turns out to exist, and two calls would ask twice.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn idle_state() -> (bool, f64) {
+    (true, idle_seconds())
+}
+
+/// Hold a probe's answer for `ttl`, so a five-second tracker tick does not
+/// become a five-second subprocess.
+#[cfg(target_os = "linux")]
+fn cached(
+    slot: &std::sync::Mutex<Option<(std::time::Instant, bool)>>,
+    ttl: Duration,
+    probe: impl FnOnce() -> bool,
+) -> bool {
+    let Ok(mut guard) = slot.lock() else {
+        return false;
+    };
+    if let Some((at, val)) = *guard {
+        if at.elapsed() < ttl {
+            return val;
+        }
+    }
+    let val = probe();
+    *guard = Some((std::time::Instant::now(), val));
+    val
+}
+
+/// Whether the sound server has a stream that is actually playing. This is
+/// what makes a film, a series or a match count as use: the picture is not
+/// visible from here, but its sound is. Players cork their stream when paused,
+/// so a corked stream is not playing.
+///
+/// `pactl` is the only thing on a PulseAudio/PipeWire box that can answer
+/// this without linking a sound library; where it is missing the answer is
+/// "nothing playing", which is exactly the old behaviour.
+#[cfg(target_os = "linux")]
+fn media_playing() -> bool {
+    static SLOT: std::sync::Mutex<Option<(std::time::Instant, bool)>> =
+        std::sync::Mutex::new(None);
+    cached(&SLOT, PROBE_TTL, || {
+        match std::process::Command::new("pactl")
+            .args(["list", "sink-inputs"])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                any_uncorked(&String::from_utf8_lossy(&out.stdout))
+            }
+            _ => false,
+        }
+    })
+}
+
+/// A `pactl list sink-inputs` listing with at least one uncorked stream.
+#[cfg(target_os = "linux")]
+fn any_uncorked(listing: &str) -> bool {
+    listing.lines().any(|l| l.trim() == "Corked: no")
+}
+
+/// Whether the screen is locked. Music playing to a locked screen is a room
+/// with nobody in it, and that is the one case the media grace alone would get
+/// wrong for hours. A desktop that implements neither interface answers "not
+/// locked", which leaves the grace as the only guard — no worse than before.
+#[cfg(target_os = "linux")]
+fn screen_locked() -> bool {
+    static SLOT: std::sync::Mutex<Option<(std::time::Instant, bool)>> =
+        std::sync::Mutex::new(None);
+    cached(&SLOT, PROBE_TTL, session_bus::locked)
+}
+
+/// The two questions the session bus answers that nothing else on the machine
+/// will: how long GNOME thinks the session has been idle, and whether the
+/// screen is locked. `dbus` is already linked (the keyring talks to the secret
+/// service over it), so this costs nothing to reach for.
+#[cfg(target_os = "linux")]
+mod session_bus {
+    use dbus::blocking::Connection;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_millis(500);
+
+    /// One connection, reused across ticks. A failure drops it rather than
+    /// being remembered: gnome-shell restarts, and the bus comes back with it.
+    static CONN: Mutex<Option<Connection>> = Mutex::new(None);
+
+    fn call<T: for<'a> dbus::arg::Get<'a> + dbus::arg::Arg + 'static>(
+        dest: &str,
+        path: &str,
+        method: &str,
+    ) -> Option<T> {
+        let mut guard = CONN.lock().ok()?;
+        if guard.is_none() {
+            match Connection::new_session() {
+                Ok(c) => *guard = Some(c),
+                Err(e) => {
+                    super::warn_once(&format!("screentime dbus: {e}"));
+                    return None;
+                }
+            }
+        }
+        let proxy = guard.as_ref()?.with_proxy(dest, path, TIMEOUT);
+        match proxy.method_call::<(T,), _, _, _>(dest, method, ()) {
+            Ok((v,)) => Some(v),
+            Err(_) => {
+                *guard = None;
+                None
+            }
+        }
+    }
+
+    /// Milliseconds since the last input, from Mutter's own idle monitor — the
+    /// same number gnome-settings-daemon blanks the screen by.
+    pub fn idle_ms() -> Option<u64> {
+        call::<u64>(
+            "org.gnome.Mutter.IdleMonitor",
+            "/org/gnome/Mutter/IdleMonitor/Core",
+            "GetIdletime",
+        )
+    }
+
+    /// Whether the screen is locked. Absent on a desktop that implements no
+    /// screensaver interface, and then the answer is "not locked".
+    pub fn locked() -> bool {
+        call::<bool>(
+            "org.gnome.ScreenSaver",
+            "/org/gnome/ScreenSaver",
+            "GetActive",
+        )
+        .unwrap_or(false)
+    }
+}
+
+/// macOS and Windows keep the input-only definition for now: both report a
+/// real idle counter, so the "machine on all night" failure does not arise
+/// there, and neither has a probe as cheap as `pactl`.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn media_playing() -> bool {
+    false
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn screen_locked() -> bool {
+    false
+}
 
 fn summarize(usage: &DayUsage, yesterday_total: Option<u64>) -> ScreenTime {
     let mut apps: Vec<AppTime> =
@@ -376,23 +618,36 @@ fn frontmost_app(_app: &AppHandle) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn idle_seconds() -> f64 {
+fn idle_state() -> (bool, f64) {
     match backend() {
         // MIT-SCREEN-SAVER gives a real running counter.
-        Backend::X11 => x11::idle_seconds(),
-        // ext-idle-notify reports idle as a threshold crossing (idled/resumed
-        // at `IDLE_LIMIT`), not a counter, so map that boolean back onto the
-        // numeric contract the shared loop expects. Until the client connects
-        // this reports "active", so early ticks count rather than drop.
+        Backend::X11 => (x11::has_idle(), x11::idle_seconds()),
         Backend::Wayland => {
             wl::ensure_started();
-            if wl::is_idle() {
-                IDLE_LIMIT + 1.0
+            if wl::has_idle() {
+                // ext-idle-notify reports idle as a threshold crossing
+                // (idled/resumed at `IDLE_LIMIT`), not a counter, so map that
+                // boolean back onto the numeric contract the loop expects.
+                (true, if wl::is_idle() { IDLE_LIMIT + 1.0 } else { 0.0 })
+            } else if let Some(ms) = session_bus::idle_ms() {
+                // GNOME. Mutter advertises no ext-idle-notify global at all
+                // (verified on GNOME 46: the session offers only
+                // zwp_idle_inhibit_manager_v1) and no toplevel protocol
+                // either, so without this the most common Linux desktop has
+                // no idle source whatsoever — and "never idle" is not a
+                // harmless default: it counts every second ARIA is running as
+                // screen time and reports a machine merely left switched on as
+                // an unbroken sitting.
+                (true, ms as f64 / 1000.0)
             } else {
-                0.0
+                warn_once(
+                    "screentime: no idle source on this session — \
+                     screen time cannot tell use from an empty room",
+                );
+                (false, 0.0)
             }
         }
-        Backend::Unsupported => 0.0,
+        Backend::Unsupported => (false, 0.0),
     }
 }
 
@@ -771,6 +1026,13 @@ mod x11 {
     /// frames, never sixteen, and a cycle must not hang the tracker.
     const MAX_DEPTH: usize = 16;
 
+    /// Whether idle time is knowable here at all, i.e. whether this X server
+    /// has MIT-SCREEN-SAVER. Without it `idle_seconds` reports a permanent
+    /// "active", which is a default, not an observation.
+    pub fn has_idle() -> bool {
+        with_conn(|c| Ok(c.has_screensaver)).unwrap_or(false)
+    }
+
     /// Seconds since the last keyboard/pointer input. 0 (i.e. "active") when
     /// the extension is missing, so ticks are counted rather than dropped.
     pub fn idle_seconds() -> f64 {
@@ -855,6 +1117,9 @@ mod wl {
 
     static ACTIVE: Mutex<Option<String>> = Mutex::new(None);
     static IDLE: AtomicBool = AtomicBool::new(false);
+    /// Whether the compositor turned out to offer ext-idle-notify. Until it
+    /// does, "not idle" is an assumption rather than a reading.
+    static HAS_IDLE: AtomicBool = AtomicBool::new(false);
     static START: Once = Once::new();
 
     /// Which toplevel protocol the compositor turned out to offer. GNOME/Mutter
@@ -881,6 +1146,11 @@ mod wl {
     /// Whether the session has been idle past `IDLE_LIMIT`.
     pub fn is_idle() -> bool {
         IDLE.load(Ordering::Relaxed)
+    }
+
+    /// Whether this compositor answers the idle question at all.
+    pub fn has_idle() -> bool {
+        HAS_IDLE.load(Ordering::Relaxed)
     }
 
     /// Start the Wayland client once, on the first tracker tick. Only ever
@@ -1027,6 +1297,7 @@ mod wl {
                     "ext_idle_notifier_v1" => {
                         state.notifier =
                             Some(reg.bind::<ExtIdleNotifierV1, _, _>(name, 1, qh, ()));
+                        HAS_IDLE.store(true, Ordering::Relaxed);
                     }
                     _ => {}
                 }
@@ -1396,6 +1667,39 @@ mod tests {
             s.apps.windows(2).all(|w| w[0].secs >= w[1].secs),
             "apps are ranked by time desc"
         );
+    }
+
+    /// The whole point of the presence rule, one line per case. `decide` is
+    /// pure so these need neither a sound server nor a compositor.
+    #[test]
+    fn media_counts_as_use_but_only_for_so_long() {
+        let min = |m: u64| Duration::from_secs(m * 60);
+        // Typing: use, whatever else is true.
+        assert_eq!(decide(true, 3.0, min(0), false, false), Presence::Input);
+        // Two minutes of neither key nor mouse, and silence: away.
+        assert_eq!(decide(true, 300.0, min(5), false, false), Presence::Away);
+        // The same two minutes with a film playing: still use. This is the
+        // case the old input-only rule called a break.
+        assert_eq!(decide(true, 300.0, min(5), true, false), Presence::Media);
+        // A film is hours; a playlist to an empty room is longer than that.
+        assert_eq!(decide(true, 300.0, min(100), true, false), Presence::Media);
+        assert_eq!(decide(true, 300.0, min(400), true, false), Presence::Away);
+        // Music behind a locked screen is nobody.
+        assert_eq!(decide(true, 300.0, min(5), true, true), Presence::Away);
+        // No idle source: say so rather than report a machine that has been
+        // in use since it was switched on.
+        assert_eq!(decide(false, 0.0, min(0), false, false), Presence::Unknown);
+        assert_eq!(decide(false, 0.0, min(400), false, false), Presence::Unknown);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_paused_player_is_not_playing() {
+        let listing = "Sink Input #824\n\tSink: 114\n\tCorked: no\n";
+        assert!(any_uncorked(listing));
+        assert!(!any_uncorked("Sink Input #824\n\tSink: 114\n\tCorked: yes\n"));
+        // Nothing open at all.
+        assert!(!any_uncorked(""));
     }
 
     #[cfg(target_os = "linux")]

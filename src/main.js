@@ -4,7 +4,7 @@ import { HISTORY_LEN, autoScale, latest, peak, pushSample, seriesPaths } from ".
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import { WIDGETS, defaultLayout } from "./lib/widgets.js";
 import { MIN_DAYS, anomalies, coverage, fmtHours, trends, week } from "./lib/insights.js";
-import { whatMatters } from "./lib/matters.js";
+import { whatMatters, noteSession } from "./lib/matters.js";
 import {
   addNote,
   dueLabel,
@@ -1104,7 +1104,7 @@ function mattersSources(now) {
     session: {
       app: focusSince ? focusedLabel : null,
       since: focusSince || undefined,
-      activeSince: activeSince || undefined,
+      activeSince: session?.activeSince || undefined,
     },
     classes: stagData?.status === "connected" ? (stagData.timetable?.classes ?? []) : [],
   };
@@ -3060,11 +3060,11 @@ let focusedLabel = null;
 // The last app other than ARIA to have focus, for the trigger editor.
 let lastFocusedApp = null;
 let hudInputAt = 0;
-// When the focused app took focus, and when the machine last came back from
-// idle. Both feed the header strip, which is the only thing that reports on
-// the session rather than on the day.
+// When the focused app took focus, and the sitting the tracker's presence
+// ticks add up to (see `noteSession`). Both feed the header strip, which is
+// the only thing that reports on the session rather than on the day.
 let focusSince = 0;
-let activeSince = Date.now();
+let session = null;
 let toastTimer = null;
 
 function persistAutomation() {
@@ -3117,19 +3117,24 @@ function initAutomation() {
  * *holding* focus doesn't count: closing the last other window leaves focus on
  * ARIA indefinitely, and a rule pinned to a stale name would never let go.
  */
-function onActivity({ app, label, idle }) {
+function onActivity({ app, label, idle, presence }) {
   const now = Date.now();
-  // A break is a break whoever was in front, so idle is tracked before the
-  // HUD gate below — otherwise working in the HUD would look like a break
-  // that never ends.
-  if (idle) activeSince = 0;
-  else if (!activeSince) activeSince = now;
+  // A break is a break whoever was in front, so the sitting is tracked before
+  // the HUD gate below — otherwise working in the HUD would look like a break
+  // that never ends. `presence` is the tracker's own reading; `idle` is all an
+  // older build sent, and maps onto the two states it could distinguish.
+  const before = session?.activeSince ?? 0;
+  session = noteSession(session, presence ?? (idle ? "away" : "input"), now);
+  // A sitting that ended takes the focus timer with it: coming back to the
+  // window you left is a new hour in that app, not the old one continued.
+  if (before && !session.activeSince) focusSince = 0;
 
   const usingHud = document.hasFocus() && Date.now() - hudInputAt < HUD_INPUT_GRACE_MS;
   if (usingHud) return;
   if (app && !document.hasFocus()) lastFocusedApp = app; // the editor's suggestion
-  // When the focused app changes, the session in the old one is over.
-  if ((app ?? null) !== focusedApp) focusSince = app ? now : 0;
+  // When the focused app changes, the session in the old one is over. `||
+  // !focusSince` restarts the clock on the same app after a break cleared it.
+  if ((app ?? null) !== focusedApp || !focusSince) focusSince = app ? now : 0;
   focusedApp = app ?? null;
   focusedLabel = focusedApp && (label ?? focusedApp);
 }

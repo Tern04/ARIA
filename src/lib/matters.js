@@ -52,8 +52,59 @@ export const FOCUS_MIN_MS = 20 * 60_000;
 /** Time at the machine without a break worth mentioning, then worth a nudge. */
 export const BREAK_NUDGE_MS = 90 * 60_000;
 export const BREAK_WARN_MS = 150 * 60_000;
+/**
+ * Away this long is a break. Anything shorter is the same sitting: answering
+ * the door does not rest your eyes, and a rule that reset on every two-minute
+ * gap would never let the counter reach the ninety minutes it exists to
+ * report.
+ */
+export const BREAK_MIN_MS = 5 * 60_000;
+/**
+ * No word from the tracker for this long means the machine was asleep or ARIA
+ * was not running. Either way nobody was sitting here, so it ends the sitting
+ * the same way a break does.
+ */
+export const SESSION_GAP_MS = BREAK_MIN_MS;
 /** A repo untouched this long is worth a word. */
 export const STALE_PUSH_MS = 2 * 24 * 3600_000;
+
+/**
+ * Fold one `activity` tick into the running session.
+ *
+ * The tracker answers a narrower question than this one: it says whether the
+ * machine is *in use right now* ("input", "media"), not in use ("away"), or
+ * on a session that cannot tell ("unknown"). Turning that into "how long
+ * since your last break" is this function's job, and it is where two wrong
+ * answers get fixed:
+ *
+ *   - **A pause is not a break.** Use stopping for two minutes used to reset
+ *     the sitting outright, so a real four-hour session reported as four
+ *     short ones and the nudge never came.
+ *   - **Unknown is not zero.** Where nothing can report idleness, the old
+ *     rule read "never idle" and the counter simply grew from whenever ARIA
+ *     started — a machine merely left switched on claimed to have been worked
+ *     at all night. Now the sitting is not claimed at all, and the header
+ *     says nothing rather than something false.
+ *
+ * `state` is `{ activeSince, awaySince, at }` and is returned, not mutated.
+ * `activeSince` of 0 means "no sitting to report".
+ */
+export function noteSession(state, presence, now) {
+  const prev = state ?? { activeSince: 0, awaySince: 0, at: 0 };
+  const using = presence === "input" || presence === "media";
+  // Nothing knowable, or a gap where the clock ran without us: start over.
+  if (presence === "unknown") return { activeSince: 0, awaySince: 0, at: now };
+  if (prev.at && now - prev.at >= SESSION_GAP_MS) {
+    return { activeSince: using ? now : 0, awaySince: using ? 0 : now, at: now };
+  }
+  if (using) return { activeSince: prev.activeSince || now, awaySince: 0, at: now };
+  const awaySince = prev.awaySince || now;
+  // The gap counts as part of the sitting until it is long enough to be a
+  // break; at that point the sitting is over and the next tick of use starts
+  // a fresh one.
+  const broken = now - awaySince >= BREAK_MIN_MS;
+  return { activeSince: broken ? 0 : prev.activeSince, awaySince, at: now };
+}
 
 /**
  * `sources` carries what the caller already has:
@@ -203,7 +254,9 @@ function staleItems(github, now) {
  * board.
  *
  *   session.app        the focused app, and `since` when it took focus
- *   session.activeSince  when the machine last came back from idle
+ *   session.activeSince  when the current sitting began — see `noteSession`.
+ *                        Undefined when there is no sitting to report, which
+ *                        includes every session that cannot detect a break.
  */
 function sessionItems(session, now) {
   const out = [];
