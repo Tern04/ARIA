@@ -99,6 +99,7 @@ pub fn spawn(app: AppHandle) {
                 net_tx_bps: tx / POLL.as_secs(),
                 uptime_secs: System::uptime(),
             };
+            super::history::note_hardware(stats.cpu, stats.ram, stats.cpu_temp, stats.drive_temp);
             if let Err(e) = app.emit("hardware", stats) {
                 eprintln!("hardware emit failed: {e}");
             }
@@ -179,6 +180,7 @@ fn spawn_gpu(app: AppHandle) {
         loop {
             std::thread::sleep(GPU_POLL);
             if let Some(gpu) = sample_gpu_pdh(query, counter) {
+                super::history::note_gpu(gpu, None, None, None);
                 if let Err(e) = app.emit(
                     "gpu",
                     GpuStats {
@@ -255,6 +257,12 @@ fn spawn_gpu(app: AppHandle) {
         loop {
             match tauri::async_runtime::spawn_blocking(sample_gpu_nvidia).await {
                 Ok(Ok(stats)) => {
+                    super::history::note_gpu(
+                        stats.gpu,
+                        stats.temp_c,
+                        stats.vram_used_mb,
+                        stats.vram_total_mb,
+                    );
                     if let Err(e) = app.emit("gpu", stats) {
                         eprintln!("gpu emit failed: {e}");
                     }

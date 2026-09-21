@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   MAX_PRESETS,
+  promotePreset,
   sanitizeWallpaper,
   boardToLayout,
   matchingPreset,
@@ -137,4 +138,15 @@ test("a preset keeps its wallpaper when the board is re-saved", () => {
   // and it survives a round trip through storage
   const stored = parsePresets(JSON.stringify([{ name: "w", board: board(), wallpaper: wp }]), widgets);
   assert.deepEqual(stored[0].wallpaper, wp);
+});
+
+test("promoting moves a preset one place up, and the first one nowhere", () => {
+  // The list order is the auto-switch priority, so this is how a board is told
+  // to win: a game should take the board from a lecture and not the reverse.
+  let presets = withPreset(withPreset([], "a", board(), widgets), "b", board(), widgets);
+  presets = withPreset(presets, "c", board(), widgets);
+  assert.deepEqual(promotePreset(presets, "c").map((p) => p.name), ["a", "c", "b"]);
+  assert.deepEqual(promotePreset(presets, "a").map((p) => p.name), ["a", "b", "c"]);
+  assert.deepEqual(promotePreset(presets, "nope"), presets, "an unknown name changes nothing");
+  assert.deepEqual(presets.map((p) => p.name), ["a", "b", "c"], "the original is not mutated");
 });

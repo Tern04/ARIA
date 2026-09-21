@@ -174,6 +174,97 @@
   display: none;
 }
 
+/* ── "what matters now" strip ───────────────────────────────
+   Structural only, like the rest of base.css — the colours come from the
+   theme's own variables, with the same fallback chain the telemetry widgets
+   use, because JARVIS names its variables --color-*.
+
+   The strip and the connection dots share one slot: the strip has it while
+   there is something to say, and the dots take it back on hover or when
+   there is nothing. Both live in the DOM the whole time, so no layout jump. */
+
+.statusbar {
+  position: relative;
+  min-width: 0;
+}
+
+.matters {
+  display: none;
+  max-width: 46vw;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-family: var(--font-display, "Inter", system-ui, sans-serif);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.02em;
+  color: var(--text-dim, var(--color-text-dim, #979ba4));
+  transition: color 0.3s;
+}
+
+.statusbar.has-matters .matters {
+  display: block;
+}
+
+/* The dots give the slot up while the strip has something to say, and take
+   it back on hover — the connection state is still one gesture away. */
+.statusbar.has-matters:not(:hover) .status-item {
+  display: none;
+}
+
+.statusbar.has-matters:hover .matters,
+.statusbar.has-matters:hover .matters-more {
+  display: none;
+}
+
+.matters:hover {
+  color: var(--text, var(--color-text, #eceae3));
+}
+
+.matters.is-warm {
+  color: var(--warn, var(--color-warn, #e0a33c));
+}
+
+.matters.is-hot {
+  color: var(--alert, #e5533d);
+}
+
+/* How much is behind the one line showing. */
+.matters-more {
+  display: none;
+  font-family: var(--font-display, "Inter", system-ui, sans-serif);
+  font-size: 0.6rem;
+  font-weight: 500;
+  opacity: 0.35;
+}
+
+.statusbar.has-matters .matters-more:not(:empty) {
+  display: inline;
+}
+
+/* Where a strip item sends you. Brief, and only ever on the widget you
+   asked for — the board is a fixed grid with nothing to scroll to. */
+@keyframes widget-jumped {
+  0%, 100% { box-shadow: none; }
+  15%, 60% { box-shadow: 0 0 0 2px var(--accent, var(--color-accent, #e8ac53)); }
+}
+
+.widget.jumped {
+  animation: widget-jumped 1.6s ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .widget.jumped {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--accent, var(--color-accent, #e8ac53));
+  }
+}
+
 /* ── display menu (monitor picker + fill toggle) ────────────
    Reuses .theme-menu chrome; monitors have no color swatch. */
 
@@ -221,6 +312,26 @@
   text-overflow: ellipsis;
 }
 
+/* Priority handle. Sits at the far left, as far from the delete as the row
+   allows — the two were neighbours once and the wrong one got clicked. */
+.preset-row .preset-up {
+  flex: none;
+  padding: 8px 6px 8px 8px;
+  color: rgba(201, 204, 211, 0.3);
+  font-size: 0.55rem;
+  line-height: 1;
+}
+
+.preset-row .preset-up:hover:not(:disabled) {
+  color: #eceae3;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.preset-row .preset-up:disabled {
+  opacity: 0.22;
+  cursor: default;
+}
+
 .preset-row .preset-del {
   flex: none;
   padding: 8px 9px;
@@ -232,6 +343,16 @@
 .preset-row .preset-del:hover {
   color: #e57b63;
   background: rgba(229, 123, 99, 0.12);
+}
+
+/* Armed: the first click asked, this one means it. Loud enough that a misclick
+   is seen before the second click, which is the whole point of the state. */
+.preset-row .preset-del.armed {
+  padding: 6px 8px;
+  color: #e57b63;
+  background: rgba(229, 123, 99, 0.16);
+  font: 600 0.68rem/1 "Inter", system-ui, sans-serif;
+  border-radius: 7px;
 }
 
 /* Room for the trigger editor's five-way segmented control. */
@@ -401,6 +522,24 @@
   padding: 7px 10px 9px;
   font: 400 0.74rem/1.35 "Inter", system-ui, sans-serif;
   color: rgba(201, 204, 211, 0.45);
+}
+
+/* Offered only while a shipped board is missing from the list. */
+.preset-restore {
+  padding: 7px 10px;
+  font: 500 0.74rem/1.3 "Inter", system-ui, sans-serif;
+  color: rgba(201, 204, 211, 0.6);
+  text-align: left;
+}
+
+.preset-restore:hover:not(:disabled) {
+  color: #eceae3;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.preset-restore:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .preset-new[hidden] {
@@ -626,6 +765,8 @@ body.editing .win-resize {
 .widget[data-size="s"] .st-list,
 .widget[data-size="s"] .st-delta,
 .widget[data-size="s"] .st-note,
+.widget[data-size="s"] .tr-rows,
+.widget[data-size="s"] .tr-detail,
 .widget[data-size="s"] .track-artist,
 .widget[data-size="s"] .tt-grid,
 .widget[data-size="s"] .stag-section,
@@ -651,6 +792,7 @@ body.editing .win-resize {
 .widget--email[data-size="s"] .widget-body,
 .widget--stag[data-size="s"] .widget-body,
 .widget--music[data-size="s"] .widget-body,
+.widget--trends[data-size="s"] .widget-body,
 .widget--notes[data-size="s"] .widget-body {
   align-items: center;
   text-align: center;
@@ -797,6 +939,135 @@ body.editing .win-resize {
 .st-delta {
   font: 400 0.72rem/1.4 "Inter", system-ui, sans-serif;
   opacity: 0.55;
+}
+
+/* ── TRENDS widget ──────────────────────────────────────────
+   A headline sentence, then today against the usual. Built from currentColor
+   and the shared --tele-* variables so it takes on whatever theme is loaded.
+   The headline carries the colour; the rows stay neutral, because a row that
+   has merely moved is not a warning. */
+
+/* The label itself lights up, so a board with TRENDS on it says there is
+   something to read without being read. It is the only widget that does this:
+   the others are always worth a glance, and this one usually is not. */
+.widget--trends.is-warm .widget-label {
+  color: var(--tele-warn);
+  opacity: 1;
+}
+
+.widget--trends.is-hot .widget-label {
+  color: var(--tele-alert);
+  opacity: 1;
+}
+
+.tr-head {
+  font: 500 0.82rem/1.3 "Inter", system-ui, sans-serif;
+}
+
+.tr-head.is-warm {
+  color: var(--tele-warn);
+}
+
+.tr-head.is-hot {
+  color: var(--tele-alert);
+}
+
+/* Days 1-2, and any day with nothing to report: present tense, low key. */
+.tr-head.tr-quiet {
+  font-weight: 400;
+  opacity: 0.5;
+}
+
+.tr-detail {
+  font: 400 0.72rem/1.35 "Inter", system-ui, sans-serif;
+  opacity: 0.55;
+}
+
+.tr-detail.is-warm {
+  color: var(--tele-warn);
+  opacity: 0.85;
+}
+
+.tr-detail.is-hot {
+  color: var(--tele-alert);
+  opacity: 0.85;
+}
+
+.tr-rows {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-evenly;
+  gap: var(--fill-gap);
+  min-height: 0;
+}
+
+.tr-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: 400 0.74rem/1 "Inter", system-ui, sans-serif;
+}
+
+.tr-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  opacity: 0.6;
+}
+
+.tr-now {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+/* The usual, and which way today has moved from it. Deliberately quiet: the
+   arrow is direction, not judgement — more CPU than usual is not a problem. */
+.tr-usual {
+  min-width: 4.4em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.4;
+}
+
+.tr-week {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex: 1 1 0;
+  min-height: 22px;
+}
+
+.tr-bar {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  height: 100%;
+  min-width: 0;
+}
+
+.tr-bar-fill {
+  width: 100%;
+  border-radius: 1px;
+  background: currentColor;
+  opacity: 0.35;
+}
+
+.tr-bar-day {
+  font: 400 0.6rem/1 "Inter", system-ui, sans-serif;
+  opacity: 0.4;
+}
+
+.tr-apps {
+  font: 400 0.7rem/1.3 "Inter", system-ui, sans-serif;
+  opacity: 0.5;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* ── NOTES widget ───────────────────────────────────────────
@@ -1060,7 +1331,10 @@ body.editing .win-resize {
 .widget--gpu,
 .widget--thermals,
 .widget--perf,
-.widget--latency {
+.widget--latency,
+/* TRENDS is not part of the loadout, but it reports on the same sensors and
+   colours its headline by the same warn/alert convention. */
+.widget--trends {
   --tele-accent: var(--accent, var(--color-accent, #e8ac53));
   --tele-warn: var(--warn, var(--color-warn, #e0a33c));
   --tele-alert: var(--alert, #e5533d);

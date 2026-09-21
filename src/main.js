@@ -3,6 +3,8 @@ import { progressAt } from "./lib/music.js";
 import { HISTORY_LEN, autoScale, latest, peak, pushSample, seriesPaths } from "./lib/history.js";
 import { applyTerminalTheme, initTerminal, syncTerminal } from "./lib/terminal.js";
 import { WIDGETS, defaultLayout } from "./lib/widgets.js";
+import { MIN_DAYS, anomalies, coverage, fmtHours, trends, week } from "./lib/insights.js";
+import { whatMatters, noteSession } from "./lib/matters.js";
 import {
   addNote,
   dueLabel,
@@ -14,11 +16,15 @@ import {
   toggleNote,
 } from "./lib/notes.js";
 import {
+  MAX_PRESETS,
   applyBuiltins,
   boardToLayout,
   matchingPreset,
+  missingBuiltins,
   normalizeName,
   parsePresets,
+  promotePreset,
+  restoreBuiltins,
   sanitizeWallpaper,
   withPreset,
   withPresetWallpaper,
@@ -1049,6 +1055,127 @@ function statRow(value, label) {
 // emit can't race ahead of registration (listen() registers over async IPC).
 function setStatus(id, online) {
   document.getElementById(id).classList.toggle("online", online);
+  sourceOnline[id] = online;
+}
+
+/* ── "what matters now" strip ───────────────────────────────
+   The header slot that used to hold six connection dots. They were green all
+   day and carried almost nothing, while the things worth acting on sat
+   scattered across nine widgets. Now the slot ranks across all of them and
+   cycles; the dots come back on hover, and a source that goes down becomes
+   the top item rather than a colour only a careful eye would catch.
+
+   The ranking is in lib/matters.js and unit-tested; this owns the clock, the
+   cycling and the jump. */
+
+// Which status dot stands for which widget. MUSIC is deliberately absent:
+// its dot means "something is playing", so "MUSIC not connected" would be a
+// false alarm every time the music stops.
+const STATUS_SOURCES = {
+  "status-stag": { widget: "stag", label: "STAG" },
+  "status-cal": { widget: "calendar", label: "CAL" },
+  "status-github": { widget: "github", label: "GITHUB" },
+  "status-mail": { widget: "email", label: "MAIL" },
+  "status-discord": { widget: "discord", label: "DISCORD" },
+};
+// Only ids we have actually heard from, so nothing is "down" before its
+// collector's first emit.
+const sourceOnline = {};
+
+const MATTERS_CYCLE_MS = 8000;
+let mattersItems = [];
+let mattersAt = 0;
+let mattersHeld = false;
+let mattersShownAt = Date.now();
+
+function mattersSources(now) {
+  return {
+    offline: Object.entries(STATUS_SOURCES)
+      .filter(([id]) => sourceOnline[id] === false)
+      .map(([, src]) => src),
+    agenda: automationAgenda(stagData, calData, now),
+    insights: trendsDays ? anomalies(trendsDays, now) : [],
+    github: githubData,
+    email: emailData,
+    notes,
+    discord: discordData,
+    // Falsy timestamps become undefined so the ranking sees "unknown" rather
+    // than the epoch, which would read as a session lasting since 1970.
+    session: {
+      app: focusSince ? focusedLabel : null,
+      since: focusSince || undefined,
+      activeSince: session?.activeSince || undefined,
+    },
+    classes: stagData?.status === "connected" ? (stagData.timetable?.classes ?? []) : [],
+  };
+}
+
+function refreshMatters() {
+  const now = Date.now();
+  const next = whatMatters(mattersSources(now), now);
+  // Keep showing the same item across a refresh when the list is unchanged;
+  // otherwise a countdown ticking from 22 to 21 min would restart the cycle.
+  const same = next.length === mattersItems.length &&
+    next.every((it, i) => it.widget === mattersItems[i].widget && it.level === mattersItems[i].level);
+  if (!same) mattersAt = 0;
+  mattersItems = next;
+  renderMatters();
+}
+
+function renderMatters() {
+  const bar = document.getElementById("statusbar");
+  const el = document.getElementById("matters");
+  bar.classList.toggle("has-matters", mattersItems.length > 0);
+  if (!mattersItems.length) {
+    el.textContent = "";
+    el.removeAttribute("title");
+    return;
+  }
+  const at = mattersAt % mattersItems.length;
+  const item = mattersItems[at];
+  el.textContent = item.text;
+  el.className = `matters ${item.level === "alert" ? "is-hot" : item.level === "warn" ? "is-warm" : ""}`;
+  el.title = mattersItems.length > 1
+    ? `${mattersItems.map((i) => i.text).join(" · ")}\n\nClick to open ${item.widget.toUpperCase()}`
+    : `Click to open ${item.widget.toUpperCase()}`;
+  el.dataset.widget = item.widget;
+  // Dots on the right of the strip stay meaningful; the count tells you how
+  // much is being hidden behind the one line showing.
+  document.getElementById("matters-more").textContent =
+    mattersItems.length > 1 ? `+${mattersItems.length - 1}` : "";
+}
+
+function initMatters() {
+  const el = document.getElementById("matters");
+  const bar = document.getElementById("statusbar");
+  // Pause the cycle while the pointer is on it — reading a line that moves
+  // out from under you is worse than no line at all.
+  bar.addEventListener("pointerenter", () => (mattersHeld = true));
+  bar.addEventListener("pointerleave", () => (mattersHeld = false));
+  el.addEventListener("click", () => {
+    const id = el.dataset.widget;
+    if (id && WIDGETS[id]) jumpToWidget(id);
+  });
+  setInterval(() => {
+    if (!mattersHeld && mattersItems.length > 1 && Date.now() - mattersShownAt >= MATTERS_CYCLE_MS) {
+      mattersAt += 1;
+      mattersShownAt = Date.now();
+    }
+    refreshMatters();
+  }, 1000);
+  refreshMatters();
+}
+
+/** Bring a widget to the board if it is in the tray, then draw attention. */
+function jumpToWidget(id) {
+  if (layout[id]?.hidden) showWidget(id);
+  const el = widgetEl(id);
+  if (!el) return;
+  el.classList.remove("jumped");
+  // Reflow so the animation restarts when the same widget is clicked twice.
+  void el.offsetWidth;
+  el.classList.add("jumped");
+  setTimeout(() => el.classList.remove("jumped"), 1600);
 }
 
 let screentimeData = null;
@@ -1059,6 +1186,14 @@ let screentimeData = null;
 const ST_NO_APP_BREAKDOWN = {
   "idle-only": "no per-app breakdown on this compositor",
   unsupported: "no window or idle source on this session",
+};
+
+// Backends that name *some* windows. On GNOME/Wayland the compositor names
+// none, but XWayland still names X11 clients — every Proton game among them —
+// so the list is real, just not the whole session. Saying so is the difference
+// between a short list and a wrong one.
+const ST_PARTIAL = {
+  xwayland: "X11 apps only — native Wayland windows aren't named",
 };
 
 function renderScreentime() {
@@ -1090,6 +1225,14 @@ function renderScreentime() {
     body.append(why);
     return; // there is no app list to draw
   }
+  // A partial breakdown still gets its list — with the caveat above it.
+  const partial = ST_PARTIAL[p.source];
+  if (partial && size !== "s") {
+    const why = document.createElement("div");
+    why.className = "st-note";
+    why.textContent = partial;
+    body.append(why);
+  }
   const list = document.createElement("div");
   list.className = "st-list fill-list";
   const max = p.apps[0]?.secs || 1;
@@ -1116,6 +1259,164 @@ function renderScreentime() {
     list.append(wrap);
   }
   body.append(list);
+}
+
+/* ── TRENDS widget ──────────────────────────────────────────
+   The only widget that looks backwards. Every other one reports what is
+   happening now; this one reports what is *unusual* about it, which needs the
+   record history.rs keeps and the comparisons in lib/insights.js.
+
+   It reads a file on disk rather than a live collector, so it polls on its own
+   instead of listening for an event, and it only ever pulls the aggregates —
+   the day files themselves stay in Rust. */
+
+const TRENDS_DAYS = 7;
+// The record gains one sample a minute; five minutes is far inside the rate at
+// which anything it says could change.
+const TRENDS_POLL_MS = 5 * 60_000;
+// The report, or null before the first one has come back.
+let trendsDays = null;
+let trendsFailed = false;
+
+async function loadTrends() {
+  try {
+    trendsDays = await window.__TAURI__.core.invoke("history_report", { days: TRENDS_DAYS });
+    trendsFailed = false;
+  } catch (e) {
+    console.error("history_report failed:", e);
+    trendsFailed = true;
+  }
+  renderTrends();
+}
+
+/** Level → the colour convention the telemetry widgets already use. An info
+    finding gets no class: it is news, not a warning. */
+const TREND_LEVEL = { alert: "is-hot", warn: "is-warm" };
+
+function renderTrends() {
+  const widget = document.getElementById("widget-trends");
+  const body = widget.querySelector(".widget-body");
+  // A failed read with nothing to fall back on is the only reason to say so.
+  // A failure on top of a report we already have is not worth reporting: the
+  // record is of the past, so the last one is still true.
+  if (trendsFailed && trendsDays === null) {
+    body.replaceChildren();
+    const off = document.createElement("span");
+    off.className = "disconnected";
+    off.textContent = "no record";
+    body.append(off);
+    return;
+  }
+  // Leave the "no record yet" placeholder alone until there is something.
+  if (trendsDays === null) return;
+  const size = widget.dataset.size;
+  body.replaceChildren();
+
+  const found = anomalies(trendsDays);
+  const { days, ready } = coverage(trendsDays);
+  const worst = found[0] ?? null;
+  widget.classList.toggle("is-hot", worst?.level === "alert");
+  widget.classList.toggle("is-warm", worst?.level === "warn");
+
+  const head = document.createElement("div");
+  head.className = "tr-head";
+  if (!ready) {
+    // Days 1 and 2 have nothing to be compared against. Saying so is the
+    // difference between a widget that is working and one that looks broken.
+    head.classList.add("tr-quiet");
+    head.textContent = days
+      ? `building a baseline — day ${days} of ${MIN_DAYS + 1}`
+      : "no record yet — collecting";
+  } else if (worst) {
+    if (TREND_LEVEL[worst.level]) head.classList.add(TREND_LEVEL[worst.level]);
+    head.textContent = worst.text;
+  } else {
+    head.classList.add("tr-quiet");
+    head.textContent = `nothing unusual · ${days} days on record`;
+  }
+  body.append(head);
+
+  // The headline's "why", and anything else worth saying under it.
+  if (ready && worst) {
+    const detail = document.createElement("div");
+    detail.className = "tr-detail";
+    detail.textContent = worst.detail;
+    body.append(detail);
+    if (size === "l" && found.length > 1) {
+      for (const extra of found.slice(1, 3)) {
+        const more = document.createElement("div");
+        more.className = `tr-detail ${TREND_LEVEL[extra.level] ?? ""}`;
+        more.textContent = extra.text;
+        body.append(more);
+      }
+    }
+  }
+
+  // Today against the usual, one row per metric this machine reports.
+  const rows = trends(trendsDays);
+  if (rows.length) {
+    const list = document.createElement("div");
+    list.className = "tr-rows fill-list";
+    for (const row of rows) {
+      const el = document.createElement("div");
+      el.className = "tr-row";
+      const label = document.createElement("span");
+      label.className = "tr-label";
+      label.textContent = row.label;
+      const now = document.createElement("span");
+      now.className = "tr-now";
+      now.textContent = row.text;
+      const usual = document.createElement("span");
+      usual.className = "tr-usual";
+      // A delta under 1% of the usual is noise dressed up as a number.
+      const moved = Math.abs(row.delta) > Math.abs(row.was) * 0.01;
+      usual.textContent = moved
+        ? `${row.delta > 0 ? "▲" : "▼"} ${row.usual}`
+        : `= ${row.usual}`;
+      usual.classList.toggle("tr-up", moved && row.delta > 0);
+      el.append(label, now, usual);
+      list.append(el);
+    }
+    body.append(list);
+  }
+
+  if (size !== "l") return;
+
+  // The week: one bar per day of screen time, and what the time went on.
+  const { bars, apps, total } = week(trendsDays, TRENDS_DAYS);
+  if (bars.length) {
+    const chart = document.createElement("div");
+    chart.className = "tr-week";
+    for (const bar of bars) {
+      const col = document.createElement("div");
+      col.className = "tr-bar";
+      col.title = `${bar.label} — ${fmtHours(bar.secs)}`;
+      const fill = document.createElement("div");
+      fill.className = "tr-bar-fill";
+      // A day that was on but barely used still gets a visible sliver.
+      fill.style.height = `${Math.max(2, bar.share * 100)}%`;
+      const day = document.createElement("span");
+      day.className = "tr-bar-day";
+      day.textContent = bar.label.slice(0, 1);
+      col.append(fill, day);
+      chart.append(col);
+    }
+    body.append(chart);
+  }
+  if (apps.length) {
+    const top = document.createElement("div");
+    top.className = "tr-apps";
+    top.textContent = `${fmtHours(total)} this week · ${apps
+      .slice(0, 3)
+      .map((a) => a.name)
+      .join(", ")}`;
+    body.append(top);
+  }
+}
+
+function initTrends() {
+  loadTrends();
+  setInterval(loadTrends, TRENDS_POLL_MS);
 }
 
 let musicData = null;
@@ -2128,6 +2429,7 @@ function applyLayout() {
   renderEmail();
   renderStag();
   renderScreentime();
+  renderTrends();
   renderMusic();
   renderCalendar();
   renderGpu();
@@ -2307,6 +2609,8 @@ function initLayout() {
 
 const PRESETS_KEY = "aria-presets";
 const SEEDED_KEY = "aria-presets-seeded";
+// How long a delete stays armed before it forgets it was ever asked.
+const ARM_MS = 4000;
 let presets = [];
 // Re-renders the preset menu when it is open; set by initPresetMenu().
 let renderPresetMenu = () => {};
@@ -2344,15 +2648,22 @@ function initPresetMenu() {
   const status = document.getElementById("auto-status");
   // The preset whose trigger editor is open, if any.
   let editing = null;
+  // The preset whose delete is armed, and the timer that disarms it. Deleting
+  // takes a board, its trigger and its backdrop with it, and for a shipped one
+  // it used to be final — too much for a single click on a small × sitting
+  // next to the trigger button, which is how the Gaming board went missing.
+  let arming = null;
+  let armTimer = null;
 
-  try {
-    const stored = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
-    // The shipped presets are seeded per version, so one the user deletes stays
-    // deleted while a revised one still reaches a board that has the old copy.
-    const seeding = applyBuiltins(stored, localStorage.getItem(SEEDED_KEY), WIDGETS);
+  // Fold a seeding result into the list, the record of what has been seeded,
+  // and the rules. Shared by startup and by the restore row, so a restored
+  // preset arrives exactly as a seeded one does.
+  const adopt = (seeding, stored) => {
     presets = seeding.presets;
     if (presets !== stored) persistPresets();
-    localStorage.setItem(SEEDED_KEY, JSON.stringify(seeding.seeded));
+    try {
+      localStorage.setItem(SEEDED_KEY, JSON.stringify(seeding.seeded));
+    } catch {}
     // A shipped preset brings its trigger with it, but never over one that is
     // already there: that one is the user's.
     let seededRule = false;
@@ -2364,11 +2675,26 @@ function initPresetMenu() {
       seededRule = true;
     }
     if (seededRule) persistAutomation();
+  };
+
+  try {
+    const stored = parsePresets(localStorage.getItem(PRESETS_KEY), WIDGETS);
+    // The shipped presets are seeded per version, so one the user deletes stays
+    // deleted while a revised one still reaches a board that has the old copy.
+    adopt(applyBuiltins(stored, localStorage.getItem(SEEDED_KEY), WIDGETS), stored);
     // A preset with its own backdrop keeps it across launches: if the board
     // still is that preset, wear it again.
     const onBoard = presets.find((p) => p.name === matchingPreset(layout, presets));
     if (onBoard?.wallpaper) applyPresetWallpaper(onBoard.wallpaper);
   } catch {}
+
+  /** Take the delete back out of its armed state. Returns true if it was in one. */
+  const disarm = () => {
+    clearTimeout(armTimer);
+    const was = arming !== null;
+    arming = null;
+    return was;
+  };
 
   const closeNaming = () => {
     form.hidden = true;
@@ -2538,14 +2864,33 @@ function initPresetMenu() {
       empty.className = "preset-empty";
       empty.textContent = "No presets yet. Arrange the board, then save it.";
       list.append(empty);
-      return;
+      // Falls through to the restore row: an empty list is exactly when the
+      // shipped boards are most worth offering back.
     }
     // Marked active only on an exact match, so the tick means "the board is
     // this preset" rather than "this is the one you last clicked".
     const active = matchingPreset(layout, presets);
-    for (const preset of presets) {
+    for (const [at, preset] of presets.entries()) {
       const row = document.createElement("div");
       row.className = "preset-row";
+      // The list is the priority order, so moving a preset up is the only way
+      // to say "this board wins": a game should take the board from a lecture
+      // and not the reverse. Left of the label, well away from the delete.
+      const up = document.createElement("button");
+      up.className = "preset-up";
+      up.textContent = "▲";
+      up.disabled = at === 0;
+      up.title =
+        at === 0
+          ? `"${preset.name}" already outranks the others`
+          : `Move "${preset.name}" up — the higher board wins when two triggers fire at once`;
+      up.setAttribute("aria-label", `Move preset ${preset.name} up`);
+      up.addEventListener("click", () => {
+        disarm();
+        presets = promotePreset(presets, preset.name);
+        persistPresets();
+        render();
+      });
       const apply = document.createElement("button");
       apply.className = "preset-apply";
       const label = document.createElement("span");
@@ -2555,6 +2900,7 @@ function initPresetMenu() {
       apply.title = `Apply "${preset.name}"`;
       if (preset.name === active) apply.classList.add("active");
       apply.addEventListener("click", () => {
+        disarm();
         showBoard(preset);
         menu.hidden = true;
         closeNaming();
@@ -2567,25 +2913,68 @@ function initPresetMenu() {
       when.textContent = trigger ? `⚡ ${TRIGGER_LABELS[trigger.kind]}` : "⚡";
       when.title = trigger ? "Change when this applies itself" : "Apply this automatically…";
       when.addEventListener("click", () => {
+        // The × is the next target along, so a miss lands here: disarm it.
+        disarm();
         editing = editing === preset.name ? null : preset.name;
         render();
       });
+      // Two clicks, not one: the first arms, the second deletes, and anything
+      // else — four seconds, another row, closing the menu — takes it back.
+      const armed = arming === preset.name;
       const del = document.createElement("button");
       del.className = "preset-del";
-      del.textContent = "×";
-      del.title = `Delete "${preset.name}"`;
-      del.setAttribute("aria-label", `Delete preset ${preset.name}`);
+      del.classList.toggle("armed", armed);
+      del.textContent = armed ? "Delete?" : "×";
+      del.title = armed ? `Click again to delete "${preset.name}"` : `Delete "${preset.name}"`;
+      del.setAttribute(
+        "aria-label",
+        armed ? `Confirm deleting preset ${preset.name}` : `Delete preset ${preset.name}`,
+      );
       del.addEventListener("click", () => {
+        if (!armed) {
+          disarm();
+          arming = preset.name;
+          armTimer = setTimeout(() => {
+            if (disarm()) render();
+          }, ARM_MS);
+          render();
+          return;
+        }
+        disarm();
         presets = withoutPreset(presets, preset.name);
         persistPresets();
         setTrigger(preset.name, null);
         if (editing === preset.name) editing = null;
         render();
       });
-      row.append(apply, when, del);
+      row.append(up, apply, when, del);
       list.append(row);
       if (editing === preset.name) list.append(triggerEditor(preset.name));
     }
+
+    // The way back from a deleted shipped board. Offered only while one is
+    // actually missing, so it is invisible on a board that has them all.
+    const missing = missingBuiltins(presets);
+    if (!missing.length) return;
+    const full = presets.length >= MAX_PRESETS;
+    const restore = document.createElement("button");
+    restore.className = "preset-restore";
+    restore.disabled = full;
+    restore.textContent = full
+      ? `Delete a preset to restore ${missing.join(", ")}`
+      : `↺ Restore ${missing.join(", ")}`;
+    restore.title = full
+      ? `No room for ${missing.length > 1 ? "these boards" : "this board"} until a preset is deleted`
+      : `Put back the shipped board${missing.length > 1 ? "s" : ""}, with ${
+          missing.length > 1 ? "their triggers" : "its trigger"
+        }`;
+    restore.addEventListener("click", () => {
+      disarm();
+      const stored = presets;
+      adopt(restoreBuiltins(stored, localStorage.getItem(SEEDED_KEY), WIDGETS), stored);
+      render();
+    });
+    list.append(restore);
   };
   renderPresetMenu = () => {
     // Never under the user's caret: an open app-name field would lose it.
@@ -2600,6 +2989,7 @@ function initPresetMenu() {
   });
 
   saveBtn.addEventListener("click", () => {
+    if (disarm()) render();
     saveBtn.hidden = true;
     form.hidden = false;
     // Offer the current preset's name so re-saving after a tweak is one Enter.
@@ -2626,6 +3016,7 @@ function initPresetMenu() {
     document.getElementById("theme-menu").hidden = true;
     document.getElementById("display-menu").hidden = true;
     document.getElementById("wallpaper-panel").hidden = true;
+    disarm();
     if (menu.hidden) {
       closeNaming();
       editing = null;
@@ -2638,6 +3029,7 @@ function initPresetMenu() {
   menu.addEventListener("click", (e) => e.stopPropagation());
   menu.addEventListener("pointerdown", (e) => e.stopPropagation());
   document.addEventListener("click", () => {
+    disarm();
     menu.hidden = true;
     closeNaming();
   });
@@ -2662,9 +3054,17 @@ let autoState = null;
 // The board from before the first automatic switch; what "restore" puts back.
 let autoSnapshot = null;
 let focusedApp = null;
+// The same app as a human would name it ("Overwatch", not Steam_app_2357570).
+// Display only: the rules match on focusedApp, which is the window class.
+let focusedLabel = null;
 // The last app other than ARIA to have focus, for the trigger editor.
 let lastFocusedApp = null;
 let hudInputAt = 0;
+// When the focused app took focus, and the sitting the tracker's presence
+// ticks add up to (see `noteSession`). Both feed the header strip, which is
+// the only thing that reports on the session rather than on the day.
+let focusSince = 0;
+let session = null;
 let toastTimer = null;
 
 function persistAutomation() {
@@ -2717,11 +3117,26 @@ function initAutomation() {
  * *holding* focus doesn't count: closing the last other window leaves focus on
  * ARIA indefinitely, and a rule pinned to a stale name would never let go.
  */
-function onActivity({ app }) {
+function onActivity({ app, label, idle, presence }) {
+  const now = Date.now();
+  // A break is a break whoever was in front, so the sitting is tracked before
+  // the HUD gate below — otherwise working in the HUD would look like a break
+  // that never ends. `presence` is the tracker's own reading; `idle` is all an
+  // older build sent, and maps onto the two states it could distinguish.
+  const before = session?.activeSince ?? 0;
+  session = noteSession(session, presence ?? (idle ? "away" : "input"), now);
+  // A sitting that ended takes the focus timer with it: coming back to the
+  // window you left is a new hour in that app, not the old one continued.
+  if (before && !session.activeSince) focusSince = 0;
+
   const usingHud = document.hasFocus() && Date.now() - hudInputAt < HUD_INPUT_GRACE_MS;
   if (usingHud) return;
   if (app && !document.hasFocus()) lastFocusedApp = app; // the editor's suggestion
+  // When the focused app changes, the session in the old one is over. `||
+  // !focusSince` restarts the clock on the same app after a break cleared it.
+  if ((app ?? null) !== focusedApp || !focusSince) focusSince = app ? now : 0;
   focusedApp = app ?? null;
+  focusedLabel = focusedApp && (label ?? focusedApp);
 }
 
 function autoTick() {
@@ -3550,6 +3965,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   initPinToggle();
   initMusicControls();
   initTelemetry();
+  initTrends(); // reads the record on disk, so it polls rather than listens
+  initMatters(); // after the widgets exist: its items link to them
   await initCollectors();
   // All listeners are now registered; let gated collectors start emitting.
   window.__TAURI__.core.invoke("frontend_ready");

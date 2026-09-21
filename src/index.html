@@ -154,7 +154,10 @@
             <circle class="reactor-heart" cx="100" cy="100" r="20" fill="url(#reactorCore)" />
           </svg>
         </div>
-        <div class="statusbar" aria-hidden="true">
+        <div class="statusbar" id="statusbar">
+          <button class="matters" id="matters" type="button"
+                  aria-label="What matters now — click to open the widget it came from"></button>
+          <span class="matters-more" id="matters-more" aria-hidden="true"></span>
           <span class="status-item" id="status-stag"><i></i>STAG</span>
           <span class="status-item" id="status-cal"><i></i>CAL</span>
           <span class="status-item" id="status-github"><i></i>GITHUB</span>
@@ -377,6 +380,13 @@
           <h2 class="widget-label">SCREEN TIME</h2>
           <div class="widget-body">
             <span class="disconnected">not tracking</span>
+          </div>
+        </section>
+
+        <section class="widget widget--trends" id="widget-trends">
+          <h2 class="widget-label">TRENDS</h2>
+          <div class="widget-body">
+            <span class="disconnected">no record yet</span>
           </div>
         </section>
 

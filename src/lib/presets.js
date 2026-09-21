@@ -27,6 +27,12 @@ export const MAX_NAME = 24;
  * `version` is what lets a shipped preset be revised: it is seeded again when
  * its version has moved on, and never otherwise — so a preset deleted at the
  * version it was seeded at stays deleted.
+ *
+ * Adding a widget that is hidden in every board — TRENDS, say — is not a
+ * revision and must not bump the version: a stored copy that predates it
+ * resolves the missing entry from the default board, which has it hidden too,
+ * so the boards are identical either way. Re-seeding would only overwrite
+ * whatever the user had rearranged.
  */
 export const BUILTIN_PRESETS = [
   {
@@ -51,6 +57,7 @@ export const BUILTIN_PRESETS = [
       terminal:   { c: 7, r: 1, size: "m", hidden: true },
       calendar:   { c: 1, r: 1, size: "m", hidden: true },
       notes:      { c: 1, r: 1, size: "m", hidden: true },
+      trends:     { c: 1, r: 1, size: "m", hidden: true },
     },
   },
   {
@@ -76,6 +83,7 @@ export const BUILTIN_PRESETS = [
       calendar:   { c: 1, r: 1, size: "m", hidden: true },
       gpu:        { c: 1, r: 1, size: "m", hidden: true },
       screentime: { c: 1, r: 1, size: "s", hidden: true },
+      trends:     { c: 1, r: 1, size: "m", hidden: true },
     },
   },
   {
@@ -101,6 +109,7 @@ export const BUILTIN_PRESETS = [
       gpu:        { c: 1, r: 1, size: "m", hidden: true },
       thermals:   { c: 1, r: 1, size: "m", hidden: true },
       perf:       { c: 1, r: 1, size: "m", hidden: true },
+      trends:     { c: 1, r: 1, size: "m", hidden: true },
     },
   },
 ];
@@ -122,13 +131,8 @@ export const BUILTIN_PRESETS = [
  * changes or clears is theirs, and is never written back over.
  */
 export function applyBuiltins(presets, seededRaw, widgets) {
-  let seeded = {};
-  try {
-    const parsed = JSON.parse(seededRaw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) seeded = parsed;
-  } catch {}
   let next = presets;
-  const record = { ...seeded };
+  const record = parseSeeded(seededRaw);
   const triggers = {};
   for (const builtin of BUILTIN_PRESETS) {
     const name = normalizeName(builtin.name);
@@ -141,6 +145,86 @@ export function applyBuiltins(presets, seededRaw, widgets) {
     if (builtin.trigger) triggers[name] = builtin.trigger;
   }
   return { presets: next, seeded: record, triggers };
+}
+
+/** The seeded record as a name → version map; anything else reads as empty. */
+function parseSeeded(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return { ...parsed };
+  } catch {}
+  return {};
+}
+
+/**
+ * Shipped presets that are not on the list: deleted, or never seeded because
+ * the list was full the day they arrived. Names only — the caller decides
+ * whether to offer them back.
+ */
+export function missingBuiltins(presets) {
+  return BUILTIN_PRESETS.map((b) => normalizeName(b.name)).filter(
+    (name) => !presets.some((p) => p.name === name),
+  );
+}
+
+/**
+ * Put the missing shipped presets back, whatever the seeded record says.
+ *
+ * This is the only way back from a deleted shipped preset, and it has to be
+ * asked for: the record exists precisely so that seeding never undoes a
+ * delete, so restoring is the user telling us the delete was a mistake. It
+ * forgets the record for exactly the missing ones, which leaves a shipped
+ * preset the user still has — possibly rearranged — untouched.
+ *
+ * The cap is still the cap: a full list keeps its presets, and what does not
+ * fit is simply not restored. Evicting one of the user's own boards to make
+ * room for ours would be a worse trade than the one being fixed.
+ */
+export function restoreBuiltins(presets, seededRaw, widgets) {
+  const record = parseSeeded(seededRaw);
+  const missing = missingBuiltins(presets);
+  for (const name of missing) delete record[name];
+  const seeding = applyBuiltins(presets, JSON.stringify(record), widgets);
+  // Back where it belongs, not at the end: the list is the priority order, so
+  // a Gaming board appended below Study would come back outranked by it.
+  let next = seeding.presets;
+  for (const name of missing) next = placeBuiltin(next, name);
+  return { ...seeding, presets: next };
+}
+
+/** Position of a name among the shipped presets, or -1 for one of the user's. */
+function shippedRank(name) {
+  return BUILTIN_PRESETS.findIndex((b) => normalizeName(b.name) === name);
+}
+
+/**
+ * Slide a restored shipped preset up to where its shipped neighbours put it:
+ * ahead of every shipped preset that ranks below it, and otherwise last. The
+ * user's own presets keep their order among themselves either way — this moves
+ * one entry, it does not re-sort the list.
+ */
+function placeBuiltin(presets, name) {
+  const rank = shippedRank(name);
+  const entry = presets.find((p) => p.name === name);
+  if (rank < 0 || !entry) return presets;
+  const rest = presets.filter((p) => p.name !== name);
+  const at = rest.findIndex((p) => shippedRank(p.name) > rank);
+  const cut = at < 0 ? rest.length : at;
+  return [...rest.slice(0, cut), entry, ...rest.slice(cut)];
+}
+
+/**
+ * Move a preset one place up the list — one place up in priority, since the
+ * list order is what ranks the auto-switch rules. Returns the list unchanged
+ * when it is already first, or the name is not on it.
+ */
+export function promotePreset(presets, name) {
+  const clean = normalizeName(name);
+  const at = presets.findIndex((p) => p.name === clean);
+  if (at <= 0) return presets;
+  const next = [...presets];
+  [next[at - 1], next[at]] = [next[at], next[at - 1]];
+  return next;
 }
 
 /**

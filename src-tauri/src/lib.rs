@@ -51,6 +51,7 @@ pub fn run() {
             window::desktop_background,
             window::display_server,
             window::place_on_monitor,
+            collectors::history::history_report,
             wallpaper::wallpaper_config,
             wallpaper::wallpaper_set,
             wallpaper::wallpaper_preview,

@@ -77,6 +77,10 @@ x11rb = { version = "0.13", features = ["screensaver"] }
 # Same version tauri links. Only for putting the window on a chosen monitor
 # under Wayland, which has no client position API (window::place_on_monitor).
 gtk = "0.18"
+# GNOME's session bus: Mutter's idle monitor (the only idle source on a GNOME
+# Wayland session — it advertises no ext-idle-notify) and the screensaver's
+# lock state. Same version the keyring's secret-service backend already links.
+dbus = "0.9"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

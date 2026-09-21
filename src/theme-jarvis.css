@@ -1059,7 +1059,14 @@ body.interactive .widget {
 }
 
 /* theme-switcher overrides */
-.statusbar, .vitals { display: none; }
+/* JARVIS has never shown the connection dots — the header speaks its own
+   language and a row of labelled dots is not it. The "what matters now"
+   strip is not chrome, though, so it stays: hiding it here would mean one
+   theme silently loses the feature. Hover has nothing to reveal, so the
+   strip keeps the slot instead of blanking. */
+.status-item, .vitals { display: none; }
+.statusbar.has-matters:hover .matters { display: block; }
+.statusbar.has-matters:hover .matters-more:not(:empty) { display: inline; }
 .theme-menu { font-family: "Rajdhani", sans-serif; }
 .gauge::before {
   width: 100px;
