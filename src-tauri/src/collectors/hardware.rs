@@ -123,6 +123,12 @@ fn spawn_gpu(app: AppHandle) {
             let sampled = tauri::async_runtime::spawn_blocking(sample_gpu).await;
             match sampled {
                 Ok(Ok(stats)) => {
+                    super::history::note_gpu(
+                        stats.gpu,
+                        stats.temp_c,
+                        stats.vram_used_mb,
+                        stats.vram_total_mb,
+                    );
                     if let Err(e) = app.emit("gpu", stats) {
                         eprintln!("gpu emit failed: {e}");
                     }
