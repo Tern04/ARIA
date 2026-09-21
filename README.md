@@ -18,7 +18,7 @@ Built around a student/dev workflow at ZČU, but every widget is optional and th
 | NOTES | Things to do, with pins and reminders — `!` pins a line, `@17:00` sets a time | Local, `localStorage` |
 | TERMINAL | A real shell on a real PTY — `sudo`, `apt`, `vim`, `htop`, job control | `portable-pty` (Unix `openpty` / Windows ConPTY) + [xterm.js](https://xtermjs.org) |
 | DISCORD | Voice channels across one or more servers, sorted by how much your group actually uses them (person-minutes tracked locally), who's in them (mute/deafen/streaming), plus online status and current game/song of picked friends | Discord Gateway, own bot token |
-| GPU | Model, load, VRAM, temperature, power draw against the board limit, core and memory clocks, fan — plus a load curve at L | `nvidia-smi` (Linux); load only on macOS/Windows |
+| GPU | Model, load, VRAM, temperature, power draw against the board limit, core and memory clocks, fan — plus a load curve at L | `nvidia-smi` (Linux); load, model and unified-memory use on macOS; load only on Windows |
 | THERMALS | CPU / GPU / drive temperatures on colour-banded meters, GPU fan and CPU clock | `sysinfo` components (hwmon / SMC / WMI) + `nvidia-smi` |
 | PERF | CPU, GPU, RAM and VRAM over the last three minutes, current value and peak per trace | The same collectors, sampled on one clock |
 | PING | Round trip to any host, with jitter, packet loss and a 90 s trace | System `ping`, one packet every 3 s |

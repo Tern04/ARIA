@@ -26,9 +26,9 @@ struct HardwareStats {
     uptime_secs: u64,
 }
 
-/// GPU telemetry. Only `gpu` (utilization) is available on every platform;
-/// the rest comes from `nvidia-smi` and stays `None` elsewhere, which the
-/// widget renders as "—" rather than zero.
+/// GPU telemetry. Only `gpu` (utilization) is available on every platform.
+/// Linux fills the rest from `nvidia-smi`; macOS adds name and unified-memory
+/// use. Missing fields stay `None`, which the widget renders as "—".
 #[derive(Serialize, Clone, Default)]
 struct GpuStats {
     gpu: f32,
@@ -121,14 +121,8 @@ fn spawn_gpu(app: AppHandle) {
         loop {
             let sampled = tauri::async_runtime::spawn_blocking(sample_gpu).await;
             match sampled {
-                Ok(Ok(gpu)) => {
-                    if let Err(e) = app.emit(
-                        "gpu",
-                        GpuStats {
-                            gpu,
-                            ..Default::default()
-                        },
-                    ) {
+                Ok(Ok(stats)) => {
+                    if let Err(e) = app.emit("gpu", stats) {
                         eprintln!("gpu emit failed: {e}");
                     }
                     tokio::time::sleep(GPU_POLL).await;
@@ -346,7 +340,92 @@ fn parse_nvidia(line: &str) -> Option<GpuStats> {
 fn spawn_gpu(_app: AppHandle) {}
 
 #[cfg(target_os = "macos")]
-fn sample_gpu() -> Result<f32, String> {
+fn sample_gpu() -> Result<GpuStats, String> {
+    let gpu = sample_gpu_residency()?;
+    let device = metal_device();
+    Ok(GpuStats {
+        gpu,
+        name: device.name.clone(),
+        vram_used_mb: sample_gpu_memory_mb(),
+        vram_total_mb: device.working_set_mb,
+        ..Default::default()
+    })
+}
+
+#[cfg(target_os = "macos")]
+struct MetalDevice {
+    name: Option<String>,
+    working_set_mb: Option<f32>,
+}
+
+/// Apple silicon has no dedicated VRAM: the GPU draws from unified memory up
+/// to a cap Metal calls the recommended working set (~2/3 to 3/4 of RAM,
+/// raised by `iogpu.wired_limit_mb`). That cap is the meaningful "total", not
+/// hw.memsize. It is fixed for the boot, so ask Metal once.
+#[cfg(target_os = "macos")]
+fn metal_device() -> &'static MetalDevice {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use std::ffi::CStr;
+    use std::sync::OnceLock;
+
+    #[link(name = "Metal", kind = "framework")]
+    extern "C" {
+        fn MTLCreateSystemDefaultDevice() -> *mut AnyObject;
+    }
+
+    static DEVICE: OnceLock<MetalDevice> = OnceLock::new();
+    DEVICE.get_or_init(|| unsafe {
+        let dev = MTLCreateSystemDefaultDevice();
+        if dev.is_null() {
+            return MetalDevice {
+                name: None,
+                working_set_mb: None,
+            };
+        }
+        let bytes: u64 = msg_send![dev, recommendedMaxWorkingSetSize];
+        let ns_name: *mut AnyObject = msg_send![dev, name];
+        let name = if ns_name.is_null() {
+            None
+        } else {
+            let utf8: *const std::os::raw::c_char = msg_send![ns_name, UTF8String];
+            (!utf8.is_null()).then(|| CStr::from_ptr(utf8).to_string_lossy().into_owned())
+        };
+        // MTLCreateSystemDefaultDevice returns +1.
+        let _: () = msg_send![dev, release];
+        MetalDevice {
+            name,
+            working_set_mb: (bytes > 0).then(|| bytes as f32 / 1_048_576.0),
+        }
+    })
+}
+
+/// GPU-resident memory from the AGX driver's PerformanceStatistics, the same
+/// source Activity Monitor uses. Readable without root, unlike powermetrics.
+#[cfg(target_os = "macos")]
+fn sample_gpu_memory_mb() -> Option<f32> {
+    let out = std::process::Command::new("/usr/sbin/ioreg")
+        .args(["-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_gpu_in_use_bytes(&String::from_utf8_lossy(&out.stdout)).map(|b| b as f32 / 1_048_576.0)
+}
+
+/// The closing quote before `=` keeps this off the neighbouring
+/// "In use system memory (driver)" key.
+#[cfg(target_os = "macos")]
+fn parse_gpu_in_use_bytes(output: &str) -> Option<u64> {
+    const KEY: &str = "\"In use system memory\"=";
+    let rest = &output[output.find(KEY)? + KEY.len()..];
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+fn sample_gpu_residency() -> Result<f32, String> {
     let out = std::process::Command::new("sudo")
         .args([
             "-n",
