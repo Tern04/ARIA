@@ -19,9 +19,7 @@ secrets.json
 Thumbs.db
 
 # Local-only (never push)
-CLAUDE.md
 aria-render-test.sh
-.claude/settings.local.json
 # Python bytecode from scripts/dev
 __pycache__/
 *.pyc

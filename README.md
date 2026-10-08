@@ -4,6 +4,8 @@
 
 Built around a student/dev workflow at ZČU, but every widget is optional and the board is fully rearrangeable.
 
+> **How it was built:** I designed ARIA, specified how each widget should behave, and tested it on macOS, Windows and Linux. The code was written with [Claude Code](https://claude.com/claude-code) under my direction. ARIA is also how I'm learning Rust.
+
 ## Widgets
 
 | Widget | Data | Source |
